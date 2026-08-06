@@ -82,7 +82,12 @@ impl Component for TimerComponent {
 
 fn format_hms(d: Duration) -> String {
     let total = d.as_secs();
-    format!("{:02}:{:02}:{:02}", total / 3600, (total % 3600) / 60, total % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        total / 3600,
+        (total % 3600) / 60,
+        total % 60
+    )
 }
 
 #[cfg(test)]

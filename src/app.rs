@@ -10,6 +10,7 @@ use ratatui_toaster::{ToastBuilder, ToastEngine, ToastEngineBuilder, ToastPositi
 
 use crate::action::{Action, Mode};
 use crate::commands::{self, Command};
+use crate::components::clock::ClockComponent;
 use crate::components::command_line::CommandLineComponent;
 use crate::components::session_list::SessionListComponent;
 use crate::components::status_bar::StatusBar;
@@ -26,6 +27,11 @@ const TOAST_DURATION: Duration = Duration::from_secs(3);
 const TICK_RATE: Duration = Duration::from_millis(250);
 /// Width of the session-list drawer that slides in from the right edge of the screen.
 const DRAWER_WIDTH: u16 = 40;
+/// Size of the top-left "HH:MM:SS" clock, rendered with `tui-big-text`'s `Octant` pixel size:
+/// an 8x8 glyph packs into 4 columns x 2 rows of terminal cells at that size, so 8 digits/colons
+/// needs `8 * 4` columns, plus a little breathing room.
+const CLOCK_WIDTH: u16 = 38;
+const CLOCK_HEIGHT: u16 = 2;
 
 pub struct App {
     db: Database,
@@ -34,6 +40,7 @@ pub struct App {
     mode: Mode,
 
     timer: TimerComponent,
+    clock: ClockComponent,
     session_list: SessionListComponent,
     command_line: CommandLineComponent,
     status_bar: StatusBar,
@@ -61,6 +68,7 @@ impl App {
             session_id: None,
             mode: Mode::Normal,
             timer: TimerComponent,
+            clock: ClockComponent,
             session_list: SessionListComponent::default(),
             command_line: CommandLineComponent::default(),
             status_bar: StatusBar,
@@ -494,6 +502,18 @@ impl App {
             };
 
             let buf = frame.buffer_mut();
+            let [clock_area, _] = Layout::horizontal([
+                Constraint::Length(CLOCK_WIDTH.min(main_area.width)),
+                Constraint::Min(0),
+            ])
+            .areas(main_area);
+            let [clock_area, _] = Layout::vertical([
+                Constraint::Length(CLOCK_HEIGHT.min(main_area.height)),
+                Constraint::Min(0),
+            ])
+            .areas(clock_area);
+            self.clock.render(clock_area, buf, &ctx);
+
             self.timer.render(main_area, buf, &ctx);
             if self.mode == Mode::SessionList {
                 let [drawer_area, _] = Layout::horizontal([

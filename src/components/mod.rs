@@ -1,3 +1,4 @@
+pub mod clock;
 pub mod command_line;
 pub mod session_list;
 pub mod status_bar;
