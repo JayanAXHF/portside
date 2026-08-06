@@ -18,12 +18,18 @@ pub struct TimerComponent;
 
 impl Component for TimerComponent {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
+        let [_, content_area, _] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(11),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
         let [topic_area, timer_area, status_area] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Length(8),
             Constraint::Length(1),
         ])
-        .areas(area);
+        .areas(content_area);
 
         let Some(session) = ctx.session else {
             Paragraph::new("No active session")

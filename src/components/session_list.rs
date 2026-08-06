@@ -73,8 +73,13 @@ impl Component for SessionListComponent {
                 let elapsed = session.live_elapsed().as_secs();
                 let line = Line::from(vec![
                     format!("{:<24}", session.topic).into(),
-                    format!("{:02}:{:02}:{:02}  ", elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
-                        .into(),
+                    format!(
+                        "{:02}:{:02}:{:02}  ",
+                        elapsed / 3600,
+                        (elapsed % 3600) / 60,
+                        elapsed % 60
+                    )
+                    .into(),
                     Span::styled(status_text, status_style),
                 ]);
                 ListItem::new(line)
@@ -88,7 +93,7 @@ impl Component for SessionListComponent {
         }
         .block(
             Block::bordered()
-                .borders(Borders::ALL)
+                .borders(Borders::RIGHT)
                 .title(" Previous Sessions ")
                 .title_alignment(Alignment::Center),
         )

@@ -24,6 +24,8 @@ use crate::event::{Event, EventHandler};
 /// driven by hand off the regular tick, per the crate's documented non-async escape hatch.
 const TOAST_DURATION: Duration = Duration::from_secs(3);
 const TICK_RATE: Duration = Duration::from_millis(250);
+/// Width of the session-list drawer that slides in from the right edge of the screen.
+const DRAWER_WIDTH: u16 = 40;
 
 pub struct App {
     db: Database,
@@ -178,7 +180,7 @@ impl App {
             Mode::Normal => self.handle_normal_key(key),
             Mode::CommandLine => self.command_line.handle_action(&Action::Key(key)),
             Mode::SessionList => {
-                if key.code == KeyCode::Esc {
+                if key.code == KeyCode::Esc || key.code == KeyCode::Tab {
                     Some(Action::CloseSessionList)
                 } else {
                     self.session_list.handle_action(&Action::Key(key))
@@ -424,7 +426,12 @@ impl App {
             let buf = frame.buffer_mut();
             self.timer.render(main_area, buf, &ctx);
             if self.mode == Mode::SessionList {
-                self.session_list.render(main_area, buf, &ctx);
+                let [drawer_area, _] = Layout::horizontal([
+                    Constraint::Length(DRAWER_WIDTH.min(main_area.width)),
+                    Constraint::Min(0),
+                ])
+                .areas(main_area);
+                self.session_list.render(drawer_area, buf, &ctx);
             }
             self.command_line.render(command_area, buf, &ctx);
             self.status_bar.render(status_area, buf, &ctx);
