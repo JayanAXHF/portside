@@ -1,15 +1,7 @@
-mod action;
-mod app;
-mod commands;
-mod components;
-mod db;
-mod errors;
-mod event;
-
 use std::path::PathBuf;
 
-use app::App;
-use errors::{AppError, Result};
+use portside_tui::app::App;
+use portside_tui::errors::{AppError, Result};
 
 fn main() -> Result<()> {
     let db_path = data_dir()?.join("portside.db");
