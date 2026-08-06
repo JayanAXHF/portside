@@ -2,6 +2,14 @@
 name = "portside-tui"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal UI for tracking work sessions"
+license = "Unlicense OR MIT"
+authors = ["JayanAXHF <sunil.chdry@gmail.com>"]
+homepage = "https://github.com/jayanaxhf/portside"
+repository = "https://github.com/jayanaxhf/portside"
+readme = "README.md"
+keywords = ["tui", "cli", "github", "productivity", "ratatui"]
+categories = ["command-line-utilities", "command-line-interface"]
 
 [dependencies]
 crossterm = "0.29.0"
