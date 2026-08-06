@@ -20,3 +20,10 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 thiserror = "2.0.19"
 time = { version = "0.3.55", features = ["formatting", "parsing", "local-offset", "macros"] }
 tui-big-text = "0.8.8"
+
+[[bin]]
+name = "portside"
+path = "src/bin/portside.rs"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/{ name }-v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"

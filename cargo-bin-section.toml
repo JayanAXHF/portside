@@ -1,0 +1,6 @@
+[[bin]]
+name = "portside"
+path = "src/bin/portside.rs"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/{ name }-v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
