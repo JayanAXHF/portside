@@ -3,6 +3,8 @@ pub mod session_list;
 pub mod status_bar;
 pub mod timer;
 
+use std::time::Duration;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
@@ -14,6 +16,7 @@ use crate::db::Session;
 pub struct AppContext<'a> {
     pub mode: Mode,
     pub session: Option<&'a Session>,
+    pub today_total: Duration,
 }
 
 /// A self-contained UI panel. Presentation state (text buffers, list selection, scroll offsets)

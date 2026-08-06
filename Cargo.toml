@@ -16,6 +16,7 @@ crossterm = "0.29.0"
 directories = "6.0.0"
 ratatui = "0.30.2"
 ratatui-toaster = "0.1.4"
+notify-rust = "4"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 thiserror = "2.0.19"
 time = { version = "0.3.55", features = ["formatting", "parsing", "local-offset", "macros"] }

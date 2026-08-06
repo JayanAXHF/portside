@@ -41,6 +41,12 @@ pub struct App {
     toast_engine: ToastEngine<()>,
     toast_shown_at: Option<Instant>,
 
+    break_until: Option<Instant>,
+    /// Sum of today's persisted session time, excluding whatever's currently active — recomputed
+    /// on every session state transition (not every tick) since it requires a DB query.
+    /// `today_total()` adds the active session's live elapsed time back on top per-frame.
+    today_total_base: Duration,
+
     event_handler: EventHandler,
     should_quit: bool,
 }
@@ -48,6 +54,7 @@ pub struct App {
 impl App {
     pub fn new(db_path: PathBuf) -> Result<Self> {
         let db = Database::open(&db_path)?;
+        let today_total_base = Duration::from_secs(db.today_elapsed_secs(None)?.max(0) as u64);
         Ok(Self {
             db,
             session: None,
@@ -61,6 +68,8 @@ impl App {
                 .default_duration(TOAST_DURATION)
                 .build(),
             toast_shown_at: None,
+            break_until: None,
+            today_total_base,
             event_handler: EventHandler::new(TICK_RATE),
             should_quit: false,
         })
@@ -99,7 +108,7 @@ impl App {
         match action {
             Action::Tick => {
                 self.maybe_hide_toast();
-                None
+                self.maybe_notify_break_expired()
             }
             Action::Resize => None,
             Action::Key(key) => self.handle_key(*key),
@@ -124,8 +133,8 @@ impl App {
                 let result = self.resume();
                 Some(self.toast_result(result))
             }
-            Action::ToggleBreak => {
-                let result = self.toggle_break();
+            Action::ToggleBreak(duration) => {
+                let result = self.toggle_break(*duration);
                 Some(self.toast_result(result))
             }
             Action::CompleteSession => {
@@ -201,7 +210,7 @@ impl App {
                 }) => Some(Action::Pause),
                 _ => Some(Action::Resume),
             },
-            KeyCode::Char('b') => Some(Action::ToggleBreak),
+            KeyCode::Char('b') => Some(Action::ToggleBreak(None)),
             KeyCode::Char('c') => Some(Action::CompleteSession),
             KeyCode::Tab | KeyCode::Char('s') => Some(Action::OpenSessionList),
             KeyCode::Char('q') => Some(Action::Quit),
@@ -214,7 +223,7 @@ impl App {
             Command::Topic(topic) => Some(Action::StartSession { topic }),
             Command::Pause => Some(Action::Pause),
             Command::Resume => Some(Action::Resume),
-            Command::ToggleBreak => Some(Action::ToggleBreak),
+            Command::ToggleBreak(duration) => Some(Action::ToggleBreak(duration)),
             Command::ResumePrevious(id) => Some(Action::ResumePrevious(id)),
             Command::Sessions => Some(Action::OpenSessionList),
             Command::Complete => Some(Action::CompleteSession),
@@ -247,12 +256,56 @@ impl App {
         }
     }
 
+    /// Recomputes `today_total_base` from the DB, excluding the active session's row (its live
+    /// elapsed time is added separately in `today_total`). Called after every session state
+    /// transition that persists a change, rather than every tick, to avoid a SQLite query 4x/sec.
+    fn refresh_today_total_base(&mut self) {
+        if let Ok(secs) = self.db.today_elapsed_secs(self.session_id) {
+            self.today_total_base = Duration::from_secs(secs.max(0) as u64);
+        }
+    }
+
+    /// Total time worked today: today's persisted sessions plus the live elapsed time of the
+    /// active session, if it was started today. See `refresh_today_total_base` for how the DB
+    /// portion avoids double counting the active session.
+    fn today_total(&self) -> Duration {
+        let live = match &self.session {
+            Some(s) if is_today(s.started_at) => s.live_elapsed(),
+            _ => Duration::ZERO,
+        };
+        self.today_total_base + live
+    }
+
+    /// Checks whether an active timed break has expired and, if so, fires the terminal bell +
+    /// best-effort OS notification and clears the deadline. The session is deliberately left
+    /// `OnBreak` — this is a prompt for the user to manually resume, not an auto-resume.
+    fn maybe_notify_break_expired(&mut self) -> Option<Action> {
+        let until = self.break_until?;
+        if Instant::now() < until {
+            return None;
+        }
+        self.break_until = None;
+        let topic = self
+            .session
+            .as_ref()
+            .map(|s| s.topic.as_str())
+            .unwrap_or("your session");
+        crate::notify::fire_break_alert(topic);
+        Some(Action::Toast(
+            ToastType::Info,
+            format!("Break over — resume {topic} when ready"),
+        ))
+    }
+
     /// Takes ownership of the active session out of `self`, if any, so it can be mutated and
     /// persisted without holding a borrow of `self` across the `self.db.update_session` call.
     /// Callers must put it back via `restore` on every path, including early returns.
     fn take_active(&mut self) -> Option<(i64, Session)> {
         match (self.session_id, self.session.take()) {
-            (Some(id), Some(session)) => Some((id, session)),
+            (Some(id), Some(session)) => {
+                self.break_until = None;
+                Some((id, session))
+            }
             (id, session) => {
                 self.session_id = id;
                 self.session = session;
@@ -285,6 +338,7 @@ impl App {
         let id = self.db.insert_session(&session)?;
         self.session_id = Some(id);
         self.session = Some(session);
+        self.refresh_today_total_base();
         Ok(format!("Started session: {topic}"))
     }
 
@@ -305,6 +359,7 @@ impl App {
             return Err(err);
         }
         self.restore(id, session);
+        self.refresh_today_total_base();
         Ok("Paused".to_string())
     }
 
@@ -330,26 +385,27 @@ impl App {
             return Err(err);
         }
         self.restore(id, session);
+        self.refresh_today_total_base();
         Ok("Resumed".to_string())
     }
 
-    fn toggle_break(&mut self) -> Result<String> {
+    fn toggle_break(&mut self, duration: Option<Duration>) -> Result<String> {
         let Some((id, mut session)) = self.take_active() else {
             return Err(AppError::InvalidCommand("no active session".to_string()));
         };
         let message = match session.status {
             SessionStatus::OnBreak => {
                 session.start_running();
-                "Break ended, resumed"
+                "Break ended, resumed".to_string()
             }
             SessionStatus::Running => {
                 session.freeze();
                 session.status = SessionStatus::OnBreak;
-                "On break"
+                break_message(duration)
             }
             SessionStatus::Paused => {
                 session.status = SessionStatus::OnBreak;
-                "On break"
+                break_message(duration)
             }
             SessionStatus::Completed => {
                 self.restore(id, session);
@@ -362,8 +418,12 @@ impl App {
             self.restore(id, session);
             return Err(err);
         }
+        if session.status == SessionStatus::OnBreak {
+            self.break_until = duration.map(|d| Instant::now() + d);
+        }
         self.restore(id, session);
-        Ok(message.to_string())
+        self.refresh_today_total_base();
+        Ok(message)
     }
 
     fn complete_session(&mut self) -> Result<String> {
@@ -386,6 +446,7 @@ impl App {
             return Err(err);
         }
         // Deliberately not restored: the session is finished, so there's no longer an active one.
+        self.refresh_today_total_base();
         Ok(format!("Completed session: {topic}"))
     }
 
@@ -412,6 +473,7 @@ impl App {
         let topic = session.topic.clone();
         self.session_id = Some(row_id);
         self.session = Some(session);
+        self.refresh_today_total_base();
         Ok(format!("Resumed session: {topic}"))
     }
 
@@ -428,6 +490,7 @@ impl App {
             let ctx = AppContext {
                 mode: self.mode,
                 session: self.session.as_ref(),
+                today_total: self.today_total(),
             };
 
             let buf = frame.buffer_mut();
@@ -453,5 +516,35 @@ impl App {
             }
         })?;
         Ok(())
+    }
+}
+
+/// Whether `dt` falls on today's local calendar date, with the same UTC fallback used elsewhere
+/// when the local offset can't be determined.
+fn is_today(dt: time::OffsetDateTime) -> bool {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    dt.date() == now.date()
+}
+
+fn break_message(duration: Option<Duration>) -> String {
+    match duration {
+        Some(d) => {
+            let total_secs = d.as_secs();
+            let hours = total_secs / 3600;
+            let minutes = (total_secs % 3600) / 60;
+            let seconds = total_secs % 60;
+            let mut string = String::new();
+            if hours > 0 {
+                string.push_str(&format!("{hours}h "));
+            }
+            if minutes > 0 {
+                string.push_str(&format!("{minutes}m "));
+            }
+            if seconds > 0 {
+                string.push_str(&format!("{seconds}s"));
+            }
+            format!("On break for {string}")
+        }
+        None => "On break".to_string(),
     }
 }

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crossterm::event::KeyEvent;
 use ratatui_toaster::ToastType;
 
@@ -33,7 +35,7 @@ pub enum Action {
     StartSession { topic: String },
     Pause,
     Resume,
-    ToggleBreak,
+    ToggleBreak(Option<Duration>),
     CompleteSession,
     ResumePrevious(Option<i64>),
 

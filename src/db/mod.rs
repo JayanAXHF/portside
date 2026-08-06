@@ -127,6 +127,20 @@ impl Database {
         Ok(session)
     }
 
+    /// Sum of `elapsed_secs` for sessions started on today's local calendar date, optionally
+    /// excluding one row (the active session, whose live elapsed time the caller adds separately
+    /// via `Session::live_elapsed()` to avoid double counting).
+    pub fn today_elapsed_secs(&self, exclude_id: Option<i64>) -> Result<i64> {
+        let secs: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(elapsed_secs), 0) FROM sessions
+             WHERE date(started_at, 'localtime') = date('now', 'localtime')
+               AND (?1 IS NULL OR id != ?1)",
+            params![exclude_id],
+            |row| row.get(0),
+        )?;
+        Ok(secs)
+    }
+
     pub fn get_session(&self, id: i64) -> Result<Option<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status
@@ -225,5 +239,39 @@ mod tests {
         db.insert_session(&done).unwrap();
 
         assert!(db.latest_resumable_session().unwrap().is_none());
+    }
+
+    #[test]
+    fn today_elapsed_secs_sums_only_todays_sessions() {
+        let db = Database::open_in_memory().unwrap();
+
+        let mut today = Session::new("today-topic".to_string());
+        today.elapsed = Duration::from_secs(60);
+        db.insert_session(&today).unwrap();
+
+        let mut yesterday = Session::new("yesterday-topic".to_string());
+        yesterday.started_at = today.started_at - time::Duration::days(1);
+        yesterday.elapsed = Duration::from_secs(999);
+        db.insert_session(&yesterday).unwrap();
+
+        assert_eq!(db.today_elapsed_secs(None).unwrap(), 60);
+    }
+
+    #[test]
+    fn today_elapsed_secs_excludes_given_id() {
+        let db = Database::open_in_memory().unwrap();
+
+        let mut first = Session::new("first-topic".to_string());
+        first.elapsed = Duration::from_secs(60);
+        let first_id = db.insert_session(&first).unwrap();
+
+        let mut second = Session::new("second-topic".to_string());
+        second.elapsed = Duration::from_secs(120);
+        db.insert_session(&second).unwrap();
+
+        assert_eq!(
+            db.today_elapsed_secs(Some(first_id)).unwrap(),
+            120
+        );
     }
 }
