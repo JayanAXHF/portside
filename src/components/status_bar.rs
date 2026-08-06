@@ -24,7 +24,7 @@ impl Component for StatusBar {
 
         let hints = match ctx.mode {
             Mode::Normal => {
-                "p pause  r resume  b break  c complete  Tab sessions  : command  q quit"
+                "Space pause/resume  p pause  r resume  b break  c complete  Tab sessions  : command  q quit"
             }
             Mode::CommandLine => "Enter submit  Esc cancel",
             Mode::SessionList => "j/k select  Enter resume  Esc close",

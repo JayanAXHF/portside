@@ -194,6 +194,13 @@ impl App {
             KeyCode::Char(':') => Some(Action::EnterCommandMode),
             KeyCode::Char('p') => Some(Action::Pause),
             KeyCode::Char('r') => Some(Action::Resume),
+            KeyCode::Char(' ') => match self.session {
+                Some(Session {
+                    status: SessionStatus::Running,
+                    ..
+                }) => Some(Action::Pause),
+                _ => Some(Action::Resume),
+            },
             KeyCode::Char('b') => Some(Action::ToggleBreak),
             KeyCode::Char('c') => Some(Action::CompleteSession),
             KeyCode::Tab | KeyCode::Char('s') => Some(Action::OpenSessionList),
