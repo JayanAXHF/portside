@@ -18,7 +18,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    if: ${{ github.repository_owner == 'OWNER' }}
+    if: ${{ github.repository_owner == 'JayanAXHF' }}
     strategy:
       fail-fast: false
       matrix:
@@ -75,4 +75,3 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: portside-tui-${{ matrix.target }}-${{ steps.version.outputs.version }}.${{ matrix.archive }}
-
