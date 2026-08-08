@@ -1,5 +1,6 @@
 pub mod clock;
 pub mod command_line;
+pub mod history;
 pub mod session_list;
 pub mod status_bar;
 pub mod timer;

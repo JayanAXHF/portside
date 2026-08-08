@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::errors::{AppError, Result};
+use crate::history::HistoryView;
 
 /// A parsed neovim-style `:command` line. `CommandLine` strips the leading `:` before this is
 /// called; the raw text after that is whitespace-split into a verb and the rest as arguments.
@@ -12,6 +13,7 @@ pub enum Command {
     ToggleBreak(Option<Duration>),
     ResumePrevious(Option<i64>),
     Sessions,
+    History(Option<HistoryView>),
     Complete,
     Quit,
 }
@@ -53,6 +55,10 @@ pub fn parse(input: &str) -> Result<Command> {
             .map(|id| Command::ResumePrevious(Some(id)))
             .map_err(|_| AppError::InvalidCommand(format!("invalid session id: {rest}"))),
         "sessions" => Ok(Command::Sessions),
+        "history" | "hist" if rest.is_empty() => Ok(Command::History(None)),
+        "history" | "hist" => HistoryView::parse(rest)
+            .map(|view| Command::History(Some(view)))
+            .ok_or_else(|| AppError::InvalidCommand(format!("invalid history view: {rest}"))),
         "complete" | "end" | "done" => Ok(Command::Complete),
         "quit" | "q" => Ok(Command::Quit),
         "" => Err(AppError::InvalidCommand("empty command".to_string())),
@@ -122,6 +128,25 @@ mod tests {
             Command::ToggleBreak(Some(Duration::from_secs(300)))
         );
         assert!(parse("break abc").is_err());
+    }
+
+    #[test]
+    fn parses_history_command_with_and_without_view() {
+        assert_eq!(parse("history").unwrap(), Command::History(None));
+        assert_eq!(parse("hist").unwrap(), Command::History(None));
+        assert_eq!(
+            parse("history daily").unwrap(),
+            Command::History(Some(HistoryView::Daily))
+        );
+        assert_eq!(
+            parse("history weekly").unwrap(),
+            Command::History(Some(HistoryView::Weekly))
+        );
+        assert_eq!(
+            parse("history cumulative").unwrap(),
+            Command::History(Some(HistoryView::Cumulative))
+        );
+        assert!(parse("history nonsense").is_err());
     }
 
     #[test]
