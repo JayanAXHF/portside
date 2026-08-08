@@ -94,7 +94,7 @@ impl Component for CommandLineComponent {
                         None
                     }
                     KeyCode::Enter => {
-                        let text = self.buffer.clone();
+                        let text = self.buffer.trim_start_matches(":").to_string();
                         self.reset();
                         Some(Action::SubmitCommand(text))
                     }
