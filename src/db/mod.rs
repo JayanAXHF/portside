@@ -141,6 +141,23 @@ impl Database {
         Ok(secs)
     }
 
+    /// Sum of `elapsed_secs` per local calendar day, for days on/after `since` (a
+    /// "YYYY-MM-DD" string), ordered ascending. Days with no sessions are simply absent from
+    /// the result — callers are expected to zero-fill gaps (see `history::zero_filled_daily`).
+    pub fn daily_totals_since(&self, since: &str) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT date(started_at, 'localtime') as day, SUM(elapsed_secs)
+             FROM sessions
+             WHERE day >= ?1
+             GROUP BY day
+             ORDER BY day ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![since], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn get_session(&self, id: i64) -> Result<Option<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status
@@ -273,5 +290,39 @@ mod tests {
             db.today_elapsed_secs(Some(first_id)).unwrap(),
             120
         );
+    }
+
+    #[test]
+    fn daily_totals_since_sums_per_day_and_excludes_earlier_days() {
+        let db = Database::open_in_memory().unwrap();
+
+        let mut today = Session::new("today-topic".to_string());
+        today.elapsed = Duration::from_secs(60);
+        db.insert_session(&today).unwrap();
+
+        let mut also_today = Session::new("also-today".to_string());
+        also_today.elapsed = Duration::from_secs(40);
+        db.insert_session(&also_today).unwrap();
+
+        let mut yesterday = Session::new("yesterday-topic".to_string());
+        yesterday.started_at = today.started_at - time::Duration::days(1);
+        yesterday.elapsed = Duration::from_secs(999);
+        db.insert_session(&yesterday).unwrap();
+
+        let mut too_old = Session::new("too-old-topic".to_string());
+        too_old.started_at = today.started_at - time::Duration::days(5);
+        too_old.elapsed = Duration::from_secs(999);
+        db.insert_session(&too_old).unwrap();
+
+        let since =
+            crate::history::format_ymd(today.started_at.date() - time::Duration::days(1));
+        let totals = db.daily_totals_since(&since).unwrap();
+
+        let today_str = crate::history::format_ymd(today.started_at.date());
+        let yesterday_str = crate::history::format_ymd(yesterday.started_at.date());
+
+        assert_eq!(totals.len(), 2);
+        assert!(totals.contains(&(yesterday_str, 999)));
+        assert!(totals.contains(&(today_str, 100)));
     }
 }

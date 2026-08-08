@@ -23,6 +23,7 @@ impl Component for StatusBar {
             Mode::Normal => "NORMAL",
             Mode::CommandLine => "COMMAND",
             Mode::SessionList => "SESSIONS",
+            Mode::History => "HISTORY",
         };
 
         let hints = match ctx.mode {
@@ -31,6 +32,7 @@ impl Component for StatusBar {
             }
             Mode::CommandLine => "Enter submit  Esc cancel",
             Mode::SessionList => "j/k select  Enter resume  Esc close",
+            Mode::History => "d daily  w weekly  c cumulative  Esc close",
         };
 
         let today_text = format_today(ctx.today_total);

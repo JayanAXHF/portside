@@ -12,6 +12,7 @@ use crate::action::{Action, Mode};
 use crate::commands::{self, Command};
 use crate::components::clock::ClockComponent;
 use crate::components::command_line::CommandLineComponent;
+use crate::components::history::HistoryComponent;
 use crate::components::session_list::SessionListComponent;
 use crate::components::status_bar::StatusBar;
 use crate::components::timer::TimerComponent;
@@ -19,6 +20,7 @@ use crate::components::{AppContext, Component};
 use crate::db::{Database, Session, SessionStatus};
 use crate::errors::{AppError, Result};
 use crate::event::{Event, EventHandler};
+use crate::history;
 
 /// How long a toast notification stays visible before `App::maybe_hide_toast` clears it. There
 /// is no `tokio` feature on `ratatui-toaster` here (portside is synchronous), so this timing is
@@ -27,6 +29,12 @@ const TOAST_DURATION: Duration = Duration::from_secs(3);
 const TICK_RATE: Duration = Duration::from_millis(250);
 /// Width of the session-list drawer that slides in from the right edge of the screen.
 const DRAWER_WIDTH: u16 = 40;
+/// Height of the history pane that slides up from the bottom of the main area.
+const HISTORY_HEIGHT: u16 = 12;
+/// How many days of daily totals to fetch when opening the history pane — 53 weeks, enough to
+/// fill a full 12-month Sunday-start heatmap in the daily view. Weekly/cumulative bucketing
+/// just gets a deeper buffer; both already clip to whatever fits the pane's width.
+const HISTORY_LOOKBACK_DAYS: i64 = 371;
 /// Size of the top-left "HH:MM:SS" clock, rendered with `tui-big-text`'s `Octant` pixel size:
 /// an 8x8 glyph packs into 4 columns x 2 rows of terminal cells at that size, so 8 digits/colons
 /// needs `8 * 4` columns, plus a little breathing room.
@@ -42,6 +50,7 @@ pub struct App {
     timer: TimerComponent,
     clock: ClockComponent,
     session_list: SessionListComponent,
+    history: HistoryComponent,
     command_line: CommandLineComponent,
     status_bar: StatusBar,
 
@@ -70,6 +79,7 @@ impl App {
             timer: TimerComponent,
             clock: ClockComponent,
             session_list: SessionListComponent::default(),
+            history: HistoryComponent::default(),
             command_line: CommandLineComponent::default(),
             status_bar: StatusBar,
             toast_engine: ToastEngineBuilder::new(ratatui::layout::Rect::default())
@@ -168,6 +178,29 @@ impl App {
                 self.session_list.handle_action(action);
                 None
             }
+            Action::OpenHistory(view) => {
+                self.mode = Mode::History;
+                if let Some(view) = view {
+                    self.history.set_view(*view);
+                }
+                let today = history::today_local();
+                let since = today - time::Duration::days(HISTORY_LOOKBACK_DAYS);
+                match self.db.daily_totals_since(&history::format_ymd(since)) {
+                    Ok(rows) => {
+                        let series = history::zero_filled_daily(rows, since, today);
+                        Some(Action::HistoryLoaded(series))
+                    }
+                    Err(err) => Some(Action::Toast(ToastType::Error, err.to_string())),
+                }
+            }
+            Action::CloseHistory => {
+                self.mode = Mode::Normal;
+                None
+            }
+            Action::HistoryLoaded(_) => {
+                self.history.handle_action(action);
+                None
+            }
             Action::SessionSelected(id) => {
                 self.mode = Mode::Normal;
                 let result = self.resume_previous(Some(*id));
@@ -203,6 +236,13 @@ impl App {
                     self.session_list.handle_action(&Action::Key(key))
                 }
             }
+            Mode::History => {
+                if key.code == KeyCode::Esc || key.code == KeyCode::Tab {
+                    Some(Action::CloseHistory)
+                } else {
+                    self.history.handle_action(&Action::Key(key))
+                }
+            }
         }
     }
 
@@ -234,6 +274,7 @@ impl App {
             Command::ToggleBreak(duration) => Some(Action::ToggleBreak(duration)),
             Command::ResumePrevious(id) => Some(Action::ResumePrevious(id)),
             Command::Sessions => Some(Action::OpenSessionList),
+            Command::History(view) => Some(Action::OpenHistory(view)),
             Command::Complete => Some(Action::CompleteSession),
             Command::Quit => Some(Action::Quit),
         }
@@ -502,26 +543,40 @@ impl App {
             };
 
             let buf = frame.buffer_mut();
+            let (content_area, history_area) = if self.mode == Mode::History {
+                let [content_area, history_area] = Layout::vertical([
+                    Constraint::Min(0),
+                    Constraint::Length(HISTORY_HEIGHT.min(main_area.height)),
+                ])
+                .areas(main_area);
+                (content_area, Some(history_area))
+            } else {
+                (main_area, None)
+            };
+
             let [clock_area, _] = Layout::horizontal([
-                Constraint::Length(CLOCK_WIDTH.min(main_area.width)),
+                Constraint::Length(CLOCK_WIDTH.min(content_area.width)),
                 Constraint::Min(0),
             ])
-            .areas(main_area);
+            .areas(content_area);
             let [clock_area, _] = Layout::vertical([
-                Constraint::Length(CLOCK_HEIGHT.min(main_area.height)),
+                Constraint::Length(CLOCK_HEIGHT.min(content_area.height)),
                 Constraint::Min(0),
             ])
             .areas(clock_area);
             self.clock.render(clock_area, buf, &ctx);
 
-            self.timer.render(main_area, buf, &ctx);
+            self.timer.render(content_area, buf, &ctx);
             if self.mode == Mode::SessionList {
                 let [drawer_area, _] = Layout::horizontal([
-                    Constraint::Length(DRAWER_WIDTH.min(main_area.width)),
+                    Constraint::Length(DRAWER_WIDTH.min(content_area.width)),
                     Constraint::Min(0),
                 ])
-                .areas(main_area);
+                .areas(content_area);
                 self.session_list.render(drawer_area, buf, &ctx);
+            }
+            if let Some(history_area) = history_area {
+                self.history.render(history_area, buf, &ctx);
             }
             self.command_line.render(command_area, buf, &ctx);
             self.status_bar.render(status_area, buf, &ctx);
