@@ -70,7 +70,7 @@ pub struct App {
 impl App {
     pub fn new(db_path: PathBuf) -> Result<Self> {
         let db = Database::open(&db_path)?;
-        let today_total_base = Duration::from_secs(db.today_elapsed_secs(None)?.max(0) as u64);
+        let today_total_base = Duration::from_secs(db.today_elapsed_secs()?.max(0) as u64);
         Ok(Self {
             db,
             session: None,
@@ -305,24 +305,38 @@ impl App {
         }
     }
 
-    /// Recomputes `today_total_base` from the DB, excluding the active session's row (its live
-    /// elapsed time is added separately in `today_total`). Called after every session state
-    /// transition that persists a change, rather than every tick, to avoid a SQLite query 4x/sec.
+    /// Recomputes `today_total_base` from the DB's persisted `session_time_entries`. Called after
+    /// every session state transition that persists a change, rather than every tick, to avoid a
+    /// SQLite query 4x/sec. The active session's live segment isn't persisted yet at this point
+    /// (it's only recorded on freeze), so no exclusion/double-counting concern here.
     fn refresh_today_total_base(&mut self) {
-        if let Ok(secs) = self.db.today_elapsed_secs(self.session_id) {
+        if let Ok(secs) = self.db.today_elapsed_secs() {
             self.today_total_base = Duration::from_secs(secs.max(0) as u64);
         }
     }
 
-    /// Total time worked today: today's persisted sessions plus the live elapsed time of the
-    /// active session, if it was started today. See `refresh_today_total_base` for how the DB
-    /// portion avoids double counting the active session.
+    /// Total time worked today: today's persisted time entries plus whatever portion of the
+    /// active session's current running segment falls on today, even if that session was created
+    /// on an earlier day (e.g. resumed via `resume-previous`). See `refresh_today_total_base` for
+    /// the persisted portion and `Session::live_today_secs` for the live portion.
     fn today_total(&self) -> Duration {
-        let live = match &self.session {
-            Some(s) if is_today(s.started_at) => s.live_elapsed(),
-            _ => Duration::ZERO,
-        };
+        let live = self
+            .session
+            .as_ref()
+            .map(Session::live_today_secs)
+            .unwrap_or(Duration::ZERO);
         self.today_total_base + live
+    }
+
+    /// Persists the per-day splits returned by `Session::freeze` to `session_time_entries`. Must
+    /// be called at every `freeze()` call site or that segment's time silently stops counting
+    /// toward today's total and the history pane.
+    fn record_freeze(&self, id: i64, splits: &[(time::Date, Duration)]) -> Result<()> {
+        for (date, duration) in splits {
+            self.db
+                .add_time_entry(id, &history::format_ymd(*date), duration.as_secs() as i64)?;
+        }
+        Ok(())
     }
 
     /// Checks whether an active timed break has expired and, if so, fires the terminal bell +
@@ -371,7 +385,11 @@ impl App {
     fn start_session(&mut self, topic: String) -> Result<String> {
         if let Some((id, mut session)) = self.take_active() {
             if session.status == SessionStatus::Running {
-                session.freeze();
+                let splits = session.freeze();
+                if let Err(err) = self.record_freeze(id, &splits) {
+                    self.restore(id, session);
+                    return Err(err);
+                }
             }
             if session.status != SessionStatus::Completed {
                 session.status = SessionStatus::Paused;
@@ -401,7 +419,11 @@ impl App {
                 "session is not running".to_string(),
             ));
         }
-        session.freeze();
+        let splits = session.freeze();
+        if let Err(err) = self.record_freeze(id, &splits) {
+            self.restore(id, session);
+            return Err(err);
+        }
         session.status = SessionStatus::Paused;
         if let Err(err) = self.db.update_session(id, &session) {
             self.restore(id, session);
@@ -448,7 +470,11 @@ impl App {
                 "Break ended, resumed".to_string()
             }
             SessionStatus::Running => {
-                session.freeze();
+                let splits = session.freeze();
+                if let Err(err) = self.record_freeze(id, &splits) {
+                    self.restore(id, session);
+                    return Err(err);
+                }
                 session.status = SessionStatus::OnBreak;
                 break_message(duration)
             }
@@ -486,7 +512,11 @@ impl App {
             ));
         }
         if session.status == SessionStatus::Running {
-            session.freeze();
+            let splits = session.freeze();
+            if let Err(err) = self.record_freeze(id, &splits) {
+                self.restore(id, session);
+                return Err(err);
+            }
         }
         session.status = SessionStatus::Completed;
         let topic = session.topic.clone();
@@ -502,7 +532,11 @@ impl App {
     fn resume_previous(&mut self, id: Option<i64>) -> Result<String> {
         if let Some((cur_id, mut cur_session)) = self.take_active() {
             if cur_session.status == SessionStatus::Running {
-                cur_session.freeze();
+                let splits = cur_session.freeze();
+                if let Err(err) = self.record_freeze(cur_id, &splits) {
+                    self.restore(cur_id, cur_session);
+                    return Err(err);
+                }
                 cur_session.status = SessionStatus::Paused;
             }
             if let Err(err) = self.db.update_session(cur_id, &cur_session) {
@@ -594,13 +628,6 @@ impl App {
     }
 }
 
-/// Whether `dt` falls on today's local calendar date, with the same UTC fallback used elsewhere
-/// when the local offset can't be determined.
-fn is_today(dt: time::OffsetDateTime) -> bool {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    dt.date() == now.date()
-}
-
 fn break_message(duration: Option<Duration>) -> String {
     match duration {
         Some(d) => {
@@ -621,5 +648,62 @@ fn break_message(duration: Option<Duration>) -> String {
             format!("On break for {string}")
         }
         None => "On break".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Unique scratch DB path per test, since `App::new` opens a real SQLite file rather than the
+    /// in-memory DB used by `db::tests` (there's no in-memory constructor on `App`).
+    fn temp_db_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("portside-app-test-{name}-{nanos}.sqlite3"))
+    }
+
+    struct TempDb(PathBuf);
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// End-to-end reproduction of the bug this module's `record_freeze`/`Session::freeze` split
+    /// logic fixes: resuming a session created days ago must add the newly-accrued time to
+    /// *today's* total, not silently leave it attributed to the session's original day.
+    #[test]
+    fn resuming_a_session_from_days_ago_adds_to_todays_total() {
+        let path = temp_db_path("resume-old");
+        let _cleanup = TempDb(path.clone());
+        let mut app = App::new(path).unwrap();
+
+        app.start_session("old-topic".to_string()).unwrap();
+        app.pause().unwrap();
+        let old_id = app.session_id.unwrap();
+
+        // Back-date the session as if it had been created (and left paused) 5 days ago.
+        let (_, mut session) = app.db.get_session(old_id).unwrap().unwrap();
+        session.started_at -= time::Duration::days(5);
+        app.db.update_session(old_id, &session).unwrap();
+        app.refresh_today_total_base();
+        let before = app.today_total();
+
+        app.resume_previous(Some(old_id)).unwrap();
+        // Time entries are persisted in whole seconds (`add_time_entry` takes `secs: i64`), so
+        // the running segment needs to clear a full second before `pause` will record anything.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        app.pause().unwrap();
+
+        let after = app.today_total();
+        assert!(
+            after > before,
+            "resuming an old session should add newly-accrued time to today's total \
+             (before = {before:?}, after = {after:?})"
+        );
     }
 }

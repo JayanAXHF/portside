@@ -32,6 +32,12 @@ impl Database {
     }
 
     fn migrate(conn: &Connection) -> Result<()> {
+        let time_entries_existed: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_time_entries'",
+            [],
+            |row| row.get::<_, i64>(0).map(|count| count > 0),
+        )?;
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS topics (
                 id   INTEGER PRIMARY KEY,
@@ -44,8 +50,28 @@ impl Database {
                 ended_at     TEXT,
                 elapsed_secs INTEGER NOT NULL,
                 status       TEXT NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS session_time_entries (
+                session_id INTEGER NOT NULL REFERENCES sessions(id),
+                day        TEXT NOT NULL,
+                secs       INTEGER NOT NULL,
+                PRIMARY KEY (session_id, day)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_time_entries_day ON session_time_entries(day);",
         )?;
+
+        // One-time backfill for DBs created before `session_time_entries` existed: attribute
+        // each session's whole `elapsed_secs` total to its `started_at` day, matching the old
+        // (creation-date-based) attribution exactly. Time accrued after this migration gets the
+        // corrected, actually-worked-on-day attribution via `Database::add_time_entry`.
+        if !time_entries_existed {
+            conn.execute(
+                "INSERT INTO session_time_entries (session_id, day, secs)
+                 SELECT id, date(started_at, 'localtime'), elapsed_secs FROM sessions WHERE elapsed_secs > 0",
+                [],
+            )?;
+        }
+
         Ok(())
     }
 
@@ -127,27 +153,42 @@ impl Database {
         Ok(session)
     }
 
-    /// Sum of `elapsed_secs` for sessions started on today's local calendar date, optionally
-    /// excluding one row (the active session, whose live elapsed time the caller adds separately
-    /// via `Session::live_elapsed()` to avoid double counting).
-    pub fn today_elapsed_secs(&self, exclude_id: Option<i64>) -> Result<i64> {
+    /// Records `secs` more time worked on `session_id` on local calendar day `day` ("YYYY-MM-DD"),
+    /// adding to any existing entry for that session/day pair. This is the sole source of truth
+    /// for "today's total" and the history pane's daily/weekly/cumulative totals — callers must
+    /// call this with the splits returned by `Session::freeze` whenever a running segment ends,
+    /// or that time silently stops counting toward those totals.
+    pub fn add_time_entry(&self, session_id: i64, day: &str, secs: i64) -> Result<()> {
+        if secs <= 0 {
+            return Ok(());
+        }
+        self.conn.execute(
+            "INSERT INTO session_time_entries (session_id, day, secs) VALUES (?1, ?2, ?3)
+             ON CONFLICT(session_id, day) DO UPDATE SET secs = secs + excluded.secs",
+            params![session_id, day, secs],
+        )?;
+        Ok(())
+    }
+
+    /// Sum of recorded time entries for today's local calendar date. See `add_time_entry` for how
+    /// entries get here; the currently active session's live (not-yet-frozen) segment is added
+    /// separately by the caller via `Session::live_today_secs()`.
+    pub fn today_elapsed_secs(&self) -> Result<i64> {
         let secs: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(elapsed_secs), 0) FROM sessions
-             WHERE date(started_at, 'localtime') = date('now', 'localtime')
-               AND (?1 IS NULL OR id != ?1)",
-            params![exclude_id],
+            "SELECT COALESCE(SUM(secs), 0) FROM session_time_entries WHERE day = date('now', 'localtime')",
+            [],
             |row| row.get(0),
         )?;
         Ok(secs)
     }
 
-    /// Sum of `elapsed_secs` per local calendar day, for days on/after `since` (a
-    /// "YYYY-MM-DD" string), ordered ascending. Days with no sessions are simply absent from
-    /// the result — callers are expected to zero-fill gaps (see `history::zero_filled_daily`).
+    /// Sum of recorded time entries per local calendar day, for days on/after `since` (a
+    /// "YYYY-MM-DD" string), ordered ascending. Days with no entries are simply absent from the
+    /// result — callers are expected to zero-fill gaps (see `history::zero_filled_daily`).
     pub fn daily_totals_since(&self, since: &str) -> Result<Vec<(String, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT date(started_at, 'localtime') as day, SUM(elapsed_secs)
-             FROM sessions
+            "SELECT day, SUM(secs)
+             FROM session_time_entries
              WHERE day >= ?1
              GROUP BY day
              ORDER BY day ASC",
@@ -191,6 +232,7 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<(i64, Session)> {
             elapsed: Duration::from_secs(elapsed_secs.max(0) as u64),
             status,
             running_since: None,
+            running_since_wall: None,
         },
     ))
 }
@@ -259,67 +301,78 @@ mod tests {
     }
 
     #[test]
-    fn today_elapsed_secs_sums_only_todays_sessions() {
+    fn today_elapsed_secs_sums_only_todays_entries() {
         let db = Database::open_in_memory().unwrap();
+        let session = Session::new("today-topic".to_string());
+        let id = db.insert_session(&session).unwrap();
 
-        let mut today = Session::new("today-topic".to_string());
-        today.elapsed = Duration::from_secs(60);
-        db.insert_session(&today).unwrap();
+        let today_str = crate::history::format_ymd(crate::history::today_local());
+        let yesterday_str =
+            crate::history::format_ymd(crate::history::today_local() - time::Duration::days(1));
 
-        let mut yesterday = Session::new("yesterday-topic".to_string());
-        yesterday.started_at = today.started_at - time::Duration::days(1);
-        yesterday.elapsed = Duration::from_secs(999);
-        db.insert_session(&yesterday).unwrap();
+        db.add_time_entry(id, &today_str, 60).unwrap();
+        db.add_time_entry(id, &yesterday_str, 999).unwrap();
 
-        assert_eq!(db.today_elapsed_secs(None).unwrap(), 60);
+        assert_eq!(db.today_elapsed_secs().unwrap(), 60);
     }
 
     #[test]
-    fn today_elapsed_secs_excludes_given_id() {
+    fn today_elapsed_secs_sums_across_sessions_ignoring_session_start_day() {
         let db = Database::open_in_memory().unwrap();
 
-        let mut first = Session::new("first-topic".to_string());
-        first.elapsed = Duration::from_secs(60);
-        let first_id = db.insert_session(&first).unwrap();
+        // A session created days ago, but resumed today (its `started_at` never changes, but
+        // time worked on it today should still count toward today's total).
+        let mut old_session = Session::new("old-topic".to_string());
+        old_session.started_at -= time::Duration::days(5);
+        let old_id = db.insert_session(&old_session).unwrap();
 
-        let mut second = Session::new("second-topic".to_string());
-        second.elapsed = Duration::from_secs(120);
-        db.insert_session(&second).unwrap();
+        let fresh_session = Session::new("fresh-topic".to_string());
+        let fresh_id = db.insert_session(&fresh_session).unwrap();
 
-        assert_eq!(
-            db.today_elapsed_secs(Some(first_id)).unwrap(),
-            120
-        );
+        let today_str = crate::history::format_ymd(crate::history::today_local());
+        db.add_time_entry(old_id, &today_str, 60).unwrap();
+        db.add_time_entry(fresh_id, &today_str, 120).unwrap();
+
+        assert_eq!(db.today_elapsed_secs().unwrap(), 180);
+    }
+
+    #[test]
+    fn add_time_entry_accumulates_across_multiple_calls() {
+        let db = Database::open_in_memory().unwrap();
+        let session = Session::new("topic".to_string());
+        let id = db.insert_session(&session).unwrap();
+
+        let today_str = crate::history::format_ymd(crate::history::today_local());
+        db.add_time_entry(id, &today_str, 30).unwrap();
+        db.add_time_entry(id, &today_str, 45).unwrap();
+
+        assert_eq!(db.today_elapsed_secs().unwrap(), 75);
     }
 
     #[test]
     fn daily_totals_since_sums_per_day_and_excludes_earlier_days() {
         let db = Database::open_in_memory().unwrap();
+        let session = Session::new("topic".to_string());
+        let id = db.insert_session(&session).unwrap();
 
-        let mut today = Session::new("today-topic".to_string());
-        today.elapsed = Duration::from_secs(60);
-        db.insert_session(&today).unwrap();
+        let today = crate::history::today_local();
+        let yesterday = today - time::Duration::days(1);
+        let too_old = today - time::Duration::days(5);
 
-        let mut also_today = Session::new("also-today".to_string());
-        also_today.elapsed = Duration::from_secs(40);
-        db.insert_session(&also_today).unwrap();
+        db.add_time_entry(id, &crate::history::format_ymd(today), 60)
+            .unwrap();
+        db.add_time_entry(id, &crate::history::format_ymd(today), 40)
+            .unwrap();
+        db.add_time_entry(id, &crate::history::format_ymd(yesterday), 999)
+            .unwrap();
+        db.add_time_entry(id, &crate::history::format_ymd(too_old), 999)
+            .unwrap();
 
-        let mut yesterday = Session::new("yesterday-topic".to_string());
-        yesterday.started_at = today.started_at - time::Duration::days(1);
-        yesterday.elapsed = Duration::from_secs(999);
-        db.insert_session(&yesterday).unwrap();
-
-        let mut too_old = Session::new("too-old-topic".to_string());
-        too_old.started_at = today.started_at - time::Duration::days(5);
-        too_old.elapsed = Duration::from_secs(999);
-        db.insert_session(&too_old).unwrap();
-
-        let since =
-            crate::history::format_ymd(today.started_at.date() - time::Duration::days(1));
+        let since = crate::history::format_ymd(yesterday);
         let totals = db.daily_totals_since(&since).unwrap();
 
-        let today_str = crate::history::format_ymd(today.started_at.date());
-        let yesterday_str = crate::history::format_ymd(yesterday.started_at.date());
+        let today_str = crate::history::format_ymd(today);
+        let yesterday_str = crate::history::format_ymd(yesterday);
 
         assert_eq!(totals.len(), 2);
         assert!(totals.contains(&(yesterday_str, 999)));
