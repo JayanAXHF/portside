@@ -69,9 +69,9 @@ jobs:
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path portside.exe -DestinationPath ../../../portside-tui-${{ matrix.target }}-${{ steps.version.outputs.version }}.zip
+          Compress-Archive -Path portside.exe -DestinationPath ../../../portside-${{ matrix.target }}-${{ steps.version.outputs.version }}.zip
 
       - name: Upload release asset
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: portside-tui-${{ matrix.target }}-${{ steps.version.outputs.version }}.${{ matrix.archive }}
+          files: portside-${{ matrix.target }}-${{ steps.version.outputs.version }}.${{ matrix.archive }}
