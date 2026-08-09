@@ -21,6 +21,7 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 thiserror = "2.0.19"
 time = { version = "0.3.55", features = ["formatting", "parsing", "local-offset", "macros"] }
 tui-big-text = "0.8.8"
+tui-scrollview = "0.6.7"
 
 [[bin]]
 name = "portside"

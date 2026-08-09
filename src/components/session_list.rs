@@ -1,8 +1,9 @@
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Widget};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, Borders, Cell, Clear, Row, Table, TableState, Widget};
+use tui_scrollview::{ScrollView, ScrollViewState};
 
 use crate::action::Action;
 use crate::db::{Session, SessionStatus};
@@ -15,7 +16,8 @@ use super::{AppContext, Component};
 #[derive(Debug, Default)]
 pub struct SessionListComponent {
     sessions: Vec<(i64, Session)>,
-    state: ListState,
+    state: TableState,
+    scrolview_state: ScrollViewState,
 }
 
 impl SessionListComponent {
@@ -54,7 +56,9 @@ impl Component for SessionListComponent {
     fn render(&mut self, area: Rect, buf: &mut Buffer, _ctx: &AppContext) {
         Clear.render(area, buf);
 
-        let items: Vec<ListItem> = self
+        let mut max_width = 0;
+
+        let rows: Vec<_> = self
             .sessions
             .iter()
             .map(|(_, session)| {
@@ -71,36 +75,52 @@ impl Component for SessionListComponent {
                     SessionStatus::Completed => "completed",
                 };
                 let elapsed = session.live_elapsed().as_secs();
-                let line = Line::from(vec![
-                    format!("{:<24}", session.topic).into(),
-                    format!(
-                        "{:02}:{:02}:{:02}  ",
-                        elapsed / 3600,
-                        (elapsed % 3600) / 60,
-                        elapsed % 60
-                    )
-                    .into(),
-                    Span::styled(status_text, status_style),
-                ]);
-                ListItem::new(line)
+                let t_str = format!(
+                    "{:02}:{:02}:{:02}  ",
+                    elapsed / 3600,
+                    (elapsed % 3600) / 60,
+                    elapsed % 60
+                );
+                let length = session.topic.len() + t_str.len() + status_text.len();
+                if length > max_width {
+                    max_width = length;
+                }
+                Row::new(vec![
+                    Cell::new(session.topic.clone()),
+                    Cell::new(t_str),
+                    Cell::new(Span::styled(status_text, status_style)),
+                ])
             })
             .collect();
 
-        let list = if items.is_empty() {
-            List::new(vec![ListItem::new("No previous sessions yet")])
+        let widths = [
+            Constraint::Fill(1),
+            Constraint::Percentage(15),
+            Constraint::Length(10),
+        ];
+
+        let table = if rows.is_empty() {
+            Table::new(
+                vec![Row::new(["No previous sessions yet"])],
+                [Constraint::Fill(1)],
+            )
         } else {
-            List::new(items)
+            Table::new(rows, widths)
         }
-        .block(
-            Block::bordered()
-                .borders(Borders::RIGHT)
-                .title(" Previous Sessions ")
-                .title_alignment(Alignment::Center),
-        )
-        .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
-        ratatui::widgets::StatefulWidget::render(list, area, buf, &mut self.state);
+        let mut scrollview = ScrollView::new(Size::new((max_width + 2) as u16, area.height))
+            .vertical_scrollbar_visibility(tui_scrollview::ScrollbarVisibility::Never); // 2 for padding
+        scrollview.render_stateful_widget(table, scrollview.area(), &mut self.state);
+
+        let block = Block::bordered()
+            .borders(Borders::RIGHT)
+            .title(" Previous Sessions ")
+            .title_alignment(Alignment::Center);
+        let inner = block.inner(area);
+        block.render(area, buf);
+        ratatui::widgets::StatefulWidget::render(scrollview, inner, buf, &mut self.scrolview_state);
     }
 
     fn handle_action(&mut self, action: &Action) -> Option<Action> {
@@ -121,6 +141,14 @@ impl Component for SessionListComponent {
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.select_previous();
+                        None
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        self.scrolview_state.scroll_left();
+                        None
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        self.scrolview_state.scroll_right();
                         None
                     }
                     KeyCode::Enter => self.selected_id().map(Action::SessionSelected),
