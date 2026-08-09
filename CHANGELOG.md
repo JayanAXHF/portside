@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/JayanAXHF/portside/compare/v0.2.0...v0.3.0) - 2026-08-09
+
+### Added
+
+- add a history pane with graphs for daily, weekly and cumulative history
+- add a clock that shows the current local time
+
+### Fixed
+
+- fixed sessions list overflowing and clipping
+- fix today's total not counting resumed sessions from earlier days
+- make commands with multiple `:`s still parse
+
+### Other
+
+- fix owner name in build-binaries.yml
+
 ## [0.2.0](https://github.com/JayanAXHF/portside/compare/v0.1.0...v0.2.0) - 2026-08-06
 
 ### Added
