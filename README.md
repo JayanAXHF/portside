@@ -3,6 +3,8 @@
 
 ---
 
+![Made with VHS](https://vhs.charm.sh/vhs-2J0CA1SDJAwzz7T0zSU4k0.gif)
+
 # portside
 
 > [!NOTE]
@@ -61,49 +63,49 @@ Session data is stored in a SQLite database under your platform's standard data 
 
 #### Normal mode
 
-| Key       | Action                        |
-| --------- | ------------------------------ |
-| `Space`   | Pause / resume active session  |
-| `p`       | Pause                          |
-| `r`       | Resume                         |
-| `b`       | Toggle break                   |
-| `c`       | Complete session                |
-| `Tab` / `s` | Open the session list drawer |
-| `:`       | Enter command mode              |
-| `q`       | Quit                             |
+| Key         | Action                        |
+| ----------- | ----------------------------- |
+| `Space`     | Pause / resume active session |
+| `p`         | Pause                         |
+| `r`         | Resume                        |
+| `b`         | Toggle break                  |
+| `c`         | Complete session              |
+| `Tab` / `s` | Open the session list drawer  |
+| `:`         | Enter command mode            |
+| `q`         | Quit                          |
 
 #### Commands
 
 Enter command mode with `:` and type one of the following:
 
-| Command                     | Description                                             |
-| ---------------------------- | -------------------------------------------------------- |
-| `topic <name>`                | Start a new session under the given topic                |
-| `pause`                        | Pause the active session                                  |
-| `resume` / `play`              | Resume the active session                                 |
-| `break [duration]`             | Toggle a break; optional duration like `5m` or `30s`      |
-| `resume-previous [id]`         | Resume the most recent resumable session, or a specific one by id |
-| `sessions`                     | Open the session list drawer                              |
-| `history` / `hist [view]`      | Open the history pane (`daily`, `weekly`, or `cumulative`) |
-| `complete` / `end` / `done`    | Mark the active session as complete                        |
-| `quit` / `q`                   | Quit the application                                       |
+| Command                     | Description                                                       |
+| --------------------------- | ----------------------------------------------------------------- |
+| `topic <name>`              | Start a new session under the given topic                         |
+| `pause`                     | Pause the active session                                          |
+| `resume` / `play`           | Resume the active session                                         |
+| `break [duration]`          | Toggle a break; optional duration like `5m` or `30s`              |
+| `resume-previous [id]`      | Resume the most recent resumable session, or a specific one by id |
+| `sessions`                  | Open the session list drawer                                      |
+| `history` / `hist [view]`   | Open the history pane (`daily`, `weekly`, or `cumulative`)        |
+| `complete` / `end` / `done` | Mark the active session as complete                               |
+| `quit` / `q`                | Quit the application                                              |
 
 #### Session list
 
-| Key           | Action           |
-| -------------- | ---------------- |
-| `j` / `k`       | Select session    |
-| `Enter`         | Resume selected   |
-| `Esc` / `Tab`   | Close drawer      |
+| Key           | Action          |
+| ------------- | --------------- |
+| `j` / `k`     | Select session  |
+| `Enter`       | Resume selected |
+| `Esc` / `Tab` | Close drawer    |
 
 #### History pane
 
-| Key           | Action                |
-| -------------- | ---------------------- |
-| `d`             | Daily view              |
-| `w`             | Weekly view             |
-| `c`             | Cumulative view         |
-| `Esc` / `Tab`   | Close pane              |
+| Key           | Action          |
+| ------------- | --------------- |
+| `d`           | Daily view      |
+| `w`           | Weekly view     |
+| `c`           | Cumulative view |
+| `Esc` / `Tab` | Close pane      |
 
 ### Contributing
 
