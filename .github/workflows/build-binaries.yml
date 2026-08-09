@@ -55,14 +55,14 @@ jobs:
           TAG="${{ github.event.release.tag_name }}"
           # Strip package name prefix (e.g. "my-crate-v0.1.0" -> "v0.1.0")
           VERSION="${TAG##*-v}"
-          echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Package (Unix)
         if: ${{ matrix.archive == 'tar.gz' }}
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../portside-tui-${{ matrix.target }}-${{ steps.version.outputs.version }}.tar.gz portside
+          tar -czvf ../../../portside-${{ matrix.target }}-${{ steps.version.outputs.version }}.tar.gz portside
 
       - name: Package (Windows)
         if: ${{ matrix.archive == 'zip' }}
