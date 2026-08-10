@@ -27,5 +27,11 @@ tui-scrollview = "0.6.7"
 name = "portside"
 path = "src/bin/portside.rs"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+media-remote = { version = "0.5.2", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19.0", default-features = false, features = ["blocking-api"] }
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
