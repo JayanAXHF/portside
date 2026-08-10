@@ -6,4 +6,5 @@ pub mod db;
 pub mod errors;
 pub mod event;
 pub mod history;
+pub mod media;
 pub mod notify;

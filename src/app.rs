@@ -13,6 +13,7 @@ use crate::commands::{self, Command};
 use crate::components::clock::ClockComponent;
 use crate::components::command_line::CommandLineComponent;
 use crate::components::history::HistoryComponent;
+use crate::components::now_playing::NowPlayingComponent;
 use crate::components::session_list::SessionListComponent;
 use crate::components::status_bar::StatusBar;
 use crate::components::timer::TimerComponent;
@@ -21,6 +22,7 @@ use crate::db::{Database, Session, SessionStatus};
 use crate::errors::{AppError, Result};
 use crate::event::{Event, EventHandler};
 use crate::history;
+use crate::media::MediaWatcher;
 
 /// How long a toast notification stays visible before `App::maybe_hide_toast` clears it. There
 /// is no `tokio` feature on `ratatui-toaster` here (portside is synchronous), so this timing is
@@ -40,6 +42,15 @@ const HISTORY_LOOKBACK_DAYS: i64 = 371;
 /// needs `8 * 4` columns, plus a little breathing room.
 const CLOCK_WIDTH: u16 = 38;
 const CLOCK_HEIGHT: u16 = 2;
+/// Size of the top-right "now playing" panel: a title line, an artist line, and a progress
+/// gauge, with `NOW_PLAYING_WIDTH` wide enough for a handful of words of most track/artist names
+/// before `now_playing::truncate` kicks in.
+const NOW_PLAYING_WIDTH: u16 = 34;
+const NOW_PLAYING_HEIGHT: u16 = 5;
+/// How often the background media-watcher thread re-queries the platform media backend.
+/// Playback metadata doesn't need `TICK_RATE` (250ms) fidelity, and this keeps D-Bus/objc call
+/// volume low.
+const MEDIA_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct App {
     db: Database,
@@ -49,6 +60,7 @@ pub struct App {
 
     timer: TimerComponent,
     clock: ClockComponent,
+    now_playing: NowPlayingComponent,
     session_list: SessionListComponent,
     history: HistoryComponent,
     command_line: CommandLineComponent,
@@ -64,6 +76,7 @@ pub struct App {
     today_total_base: Duration,
 
     event_handler: EventHandler,
+    media_watcher: MediaWatcher,
     should_quit: bool,
 }
 
@@ -78,6 +91,7 @@ impl App {
             mode: Mode::Normal,
             timer: TimerComponent,
             clock: ClockComponent,
+            now_playing: NowPlayingComponent::default(),
             session_list: SessionListComponent::default(),
             history: HistoryComponent::default(),
             command_line: CommandLineComponent::default(),
@@ -89,6 +103,7 @@ impl App {
             break_until: None,
             today_total_base,
             event_handler: EventHandler::new(TICK_RATE),
+            media_watcher: MediaWatcher::new(MEDIA_POLL_INTERVAL),
             should_quit: false,
         })
     }
@@ -126,7 +141,13 @@ impl App {
         match action {
             Action::Tick => {
                 self.maybe_hide_toast();
-                self.maybe_notify_break_expired()
+                if let Some(next) = self.maybe_notify_break_expired() {
+                    return Some(next);
+                }
+                if let Some(info) = self.media_watcher.try_recv() {
+                    return Some(Action::NowPlayingUpdated(info));
+                }
+                None
             }
             Action::Resize => None,
             Action::Key(key) => self.handle_key(*key),
@@ -208,6 +229,10 @@ impl App {
             }
             Action::Toast(toast_type, message) => {
                 self.show_toast(*toast_type, message.clone());
+                None
+            }
+            Action::NowPlayingUpdated(_) => {
+                self.now_playing.handle_action(action);
                 None
             }
             Action::EnterCommandMode => {
@@ -600,8 +625,25 @@ impl App {
             .areas(clock_area);
             self.clock.render(clock_area, buf, &ctx);
 
+            if self.now_playing.current.as_ref().is_some_and(|info| info.playing) {
+                let [_, now_playing_area] = Layout::horizontal([
+                    Constraint::Min(0),
+                    Constraint::Length(NOW_PLAYING_WIDTH.min(content_area.width)),
+                ])
+                .areas(content_area);
+                let [now_playing_area, _] = Layout::vertical([
+                    Constraint::Length(NOW_PLAYING_HEIGHT.min(content_area.height)),
+                    Constraint::Min(0),
+                ])
+                .areas(now_playing_area);
+                self.now_playing.render(now_playing_area, buf, &ctx);
+            }
+
             self.timer.render(content_area, buf, &ctx);
             if self.mode == Mode::SessionList {
+                // Deliberately overlaps the now-playing box in the top-right when the drawer is
+                // open, the same way it already overlaps the timer — the drawer takes render
+                // priority over whatever else was in `content_area` while it's open.
                 let [drawer_area, _] = Layout::horizontal([
                     Constraint::Length(DRAWER_WIDTH.min(content_area.width)),
                     Constraint::Min(0),

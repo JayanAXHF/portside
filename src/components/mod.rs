@@ -1,6 +1,7 @@
 pub mod clock;
 pub mod command_line;
 pub mod history;
+pub mod now_playing;
 pub mod session_list;
 pub mod status_bar;
 pub mod timer;

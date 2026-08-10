@@ -7,6 +7,7 @@ use time::Date;
 use crate::commands::Command;
 use crate::db::Session;
 use crate::history::HistoryView;
+use crate::media::NowPlayingInfo;
 
 /// Which component currently owns raw key input. Everything not captured by the active mode
 /// falls through to the global keybinds handled by `App`.
@@ -52,6 +53,8 @@ pub enum Action {
     HistoryLoaded(Vec<(Date, i64)>),
 
     Toast(ToastType, String),
+
+    NowPlayingUpdated(Option<NowPlayingInfo>),
 
     EnterCommandMode,
     ExitCommandMode,
