@@ -625,17 +625,19 @@ impl App {
             .areas(clock_area);
             self.clock.render(clock_area, buf, &ctx);
 
-            let [_, now_playing_area] = Layout::horizontal([
-                Constraint::Min(0),
-                Constraint::Length(NOW_PLAYING_WIDTH.min(content_area.width)),
-            ])
-            .areas(content_area);
-            let [now_playing_area, _] = Layout::vertical([
-                Constraint::Length(NOW_PLAYING_HEIGHT.min(content_area.height)),
-                Constraint::Min(0),
-            ])
-            .areas(now_playing_area);
-            self.now_playing.render(now_playing_area, buf, &ctx);
+            if self.now_playing.current.as_ref().is_some_and(|info| info.playing) {
+                let [_, now_playing_area] = Layout::horizontal([
+                    Constraint::Min(0),
+                    Constraint::Length(NOW_PLAYING_WIDTH.min(content_area.width)),
+                ])
+                .areas(content_area);
+                let [now_playing_area, _] = Layout::vertical([
+                    Constraint::Length(NOW_PLAYING_HEIGHT.min(content_area.height)),
+                    Constraint::Min(0),
+                ])
+                .areas(now_playing_area);
+                self.now_playing.render(now_playing_area, buf, &ctx);
+            }
 
             self.timer.render(content_area, buf, &ctx);
             if self.mode == Mode::SessionList {
