@@ -28,16 +28,16 @@ pub fn fetch() -> Option<NowPlayingInfo> {
     let metadata: HashMap<String, OwnedValue> = player.get_property("Metadata").ok()?;
     let title = metadata
         .get("xesam:title")
-        .and_then(|v| v.clone().downcast::<String>().ok())
+        .and_then(|v| String::try_from(v.clone()).ok())
         .filter(|s| !s.is_empty())?;
     let artist = metadata
         .get("xesam:artist")
-        .and_then(|v| v.clone().downcast::<Vec<String>>().ok())
+        .and_then(|v| Vec::<String>::try_from(v.clone()).ok())
         .and_then(|artists| artists.into_iter().next())
         .unwrap_or_default();
     let duration_micros = metadata
         .get("mpris:length")
-        .and_then(|v| v.clone().downcast::<i64>().ok())
+        .and_then(|v| i64::try_from(v).ok())
         .unwrap_or(0);
     let elapsed_micros: i64 = player.get_property("Position").unwrap_or(0);
 
