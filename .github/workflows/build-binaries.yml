@@ -62,16 +62,16 @@ jobs:
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../portside-${{ matrix.target }}-${{ steps.version.outputs.version }}.tar.gz portside
+          tar -czvf ../../../portside-tui-${{ matrix.target }}-v${{ steps.version.outputs.version }}.tar.gz portside
 
       - name: Package (Windows)
         if: ${{ matrix.archive == 'zip' }}
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path portside.exe -DestinationPath ../../../portside-${{ matrix.target }}-${{ steps.version.outputs.version }}.zip
+          Compress-Archive -Path portside.exe -DestinationPath ../../../portside-tui-${{ matrix.target }}-v${{ steps.version.outputs.version }}.zip
 
       - name: Upload release asset
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: portside-${{ matrix.target }}-${{ steps.version.outputs.version }}.${{ matrix.archive }}
+          files: portside-tui-${{ matrix.target }}-v${{ steps.version.outputs.version }}.${{ matrix.archive }}
