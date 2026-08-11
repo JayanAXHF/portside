@@ -57,6 +57,7 @@ impl Component for SessionListComponent {
         Clear.render(area, buf);
 
         let mut max_width = 0;
+        let mut max_tstr_len = 0;
 
         let rows: Vec<_> = self
             .sessions
@@ -81,6 +82,9 @@ impl Component for SessionListComponent {
                     (elapsed % 3600) / 60,
                     elapsed % 60
                 );
+                if t_str.len() > max_tstr_len {
+                    max_tstr_len = t_str.len();
+                }
                 let length = session.topic.len() + t_str.len() + status_text.len();
                 if length > max_width {
                     max_width = length;
@@ -95,7 +99,7 @@ impl Component for SessionListComponent {
 
         let widths = [
             Constraint::Fill(1),
-            Constraint::Percentage(15),
+            Constraint::Length(max_tstr_len as u16),
             Constraint::Length(10),
         ];
 
