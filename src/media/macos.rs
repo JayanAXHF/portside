@@ -28,7 +28,10 @@ pub fn fetch() -> Option<NowPlayingInfo> {
         .get("kMRMediaRemoteNowPlayingInfoArtist")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let playing = raw.get("isPlaying").and_then(|v| v.as_bool()).unwrap_or(false);
+    let playing = raw
+        .get("isPlaying")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let elapsed = info
         .get("kMRMediaRemoteNowPlayingInfoElapsedTime")
         .and_then(|v| v.as_f64())
@@ -49,14 +52,22 @@ pub fn fetch() -> Option<NowPlayingInfo> {
         .and_then(|v| v.as_f64());
     let staleness = snapshot_epoch_ms
         .and_then(|ms| {
-            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs_f64() * 1000.0;
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_secs_f64()
+                * 1000.0;
             Some(Duration::from_secs_f64(((now_ms - ms) / 1000.0).max(0.0)))
         })
         .unwrap_or(Duration::ZERO);
     let duration = Duration::from_secs_f64(duration.max(0.0));
     let elapsed = Duration::from_secs_f64(elapsed.max(0.0))
         + if playing { staleness } else { Duration::ZERO };
-    let elapsed = if duration > Duration::ZERO { elapsed.min(duration) } else { elapsed };
+    let elapsed = if duration > Duration::ZERO {
+        elapsed.min(duration)
+    } else {
+        elapsed
+    };
 
     Some(NowPlayingInfo {
         title: title.to_string(),

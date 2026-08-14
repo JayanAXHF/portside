@@ -36,7 +36,9 @@ pub enum Action {
     /// A command line submission that parsed successfully.
     ExecuteCommand(Command),
 
-    StartSession { topic: String },
+    StartSession {
+        topic: String,
+    },
     Pause,
     Resume,
     ToggleBreak(Option<Duration>),
@@ -58,4 +60,6 @@ pub enum Action {
 
     EnterCommandMode,
     ExitCommandMode,
+
+    SetDiscordEnabled(bool),
 }
