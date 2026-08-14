@@ -62,4 +62,5 @@ pub enum Action {
     ExitCommandMode,
 
     SetDiscordEnabled(bool),
+    SetTheme(String),
 }

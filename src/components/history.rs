@@ -1,13 +1,14 @@
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Bar, BarChart, Block, Borders, Clear, Widget};
 use time::Date;
 
 use crate::action::Action;
 use crate::history::{self, HistoryView};
+use crate::theme::Theme;
 
 use super::{AppContext, Component};
 
@@ -63,12 +64,15 @@ impl Component for HistoryComponent {
         }
 
         match self.view {
-            HistoryView::Daily => render_heatmap(&daily, inner, buf),
-            HistoryView::Weekly => render_bar_chart(&history::weekly_totals(&daily), inner, buf),
+            HistoryView::Daily => render_heatmap(&daily, inner, buf, ctx.theme),
+            HistoryView::Weekly => {
+                render_bar_chart(&history::weekly_totals(&daily), inner, buf, ctx.theme)
+            }
             HistoryView::Cumulative => render_bar_chart(
                 &history::cumulative_totals(&history::weekly_totals(&daily)),
                 inner,
                 buf,
+                ctx.theme,
             ),
         }
     }
@@ -95,7 +99,7 @@ impl Component for HistoryComponent {
 
 /// Weekly/Cumulative rendering — unchanged bar chart, unified into one bar width/gap now that
 /// Daily has moved to the heatmap below.
-fn render_bar_chart(series: &[(Date, i64)], inner: Rect, buf: &mut Buffer) {
+fn render_bar_chart(series: &[(Date, i64)], inner: Rect, buf: &mut Buffer, theme: &Theme) {
     const BAR_WIDTH: u16 = 4;
     const BAR_GAP: u16 = 1;
 
@@ -109,7 +113,7 @@ fn render_bar_chart(series: &[(Date, i64)], inner: Rect, buf: &mut Buffer) {
             let minutes = (*secs / 60).max(0) as u64;
             Bar::default()
                 .value(minutes)
-                .style(Style::new().fg(Color::Cyan))
+                .style(Style::new().fg(theme.accent))
                 .label(Line::from(format!("{:02}", date.day())))
         })
         .collect();
@@ -120,9 +124,9 @@ fn render_bar_chart(series: &[(Date, i64)], inner: Rect, buf: &mut Buffer) {
     let [stats_area, chart_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     Line::from(vec![
-        Span::styled(format!(" Total {}", format_minutes(total)), dim_style()),
-        Span::styled("  ·  ", dim_style()),
-        Span::styled(format!("Peak {}", format_minutes(peak)), dim_style()),
+        Span::styled(format!(" Total {}", format_minutes(total)), theme.dim()),
+        Span::styled("  ·  ", theme.dim()),
+        Span::styled(format!("Peak {}", format_minutes(peak)), theme.dim()),
     ])
     .render(stats_area, buf);
 
@@ -136,20 +140,6 @@ fn render_bar_chart(series: &[(Date, i64)], inner: Rect, buf: &mut Buffer) {
 /// trailing space before the first week column.
 const HEATMAP_GUTTER: u16 = 3;
 const WEEKDAY_LABELS: [&str; 7] = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-/// "Less -> More" 5-step intensity ramp, ending in the app's existing Cyan accent (see
-/// `SessionStatus::OnBreak` in `components/timer.rs`) so the heatmap reads as part of the same
-/// palette as the rest of the UI rather than introducing a new hue.
-const LEVEL_COLORS: [Color; 5] = [
-    Color::DarkGray,
-    Color::Rgb(38, 70, 73),
-    Color::Rgb(21, 110, 115),
-    Color::Rgb(13, 150, 158),
-    Color::Cyan,
-];
-
-fn heatmap_color(level: u8) -> Color {
-    LEVEL_COLORS[level.min(4) as usize]
-}
 
 fn month_abbrev(month: time::Month) -> &'static str {
     use time::Month::*;
@@ -176,7 +166,7 @@ fn month_abbrev(month: time::Month) -> &'static str {
 /// against the peak day across the *whole* fetched window (not just the visible columns), so
 /// the legend stays consistent with the reported Peak stat even when narrower terminals clip
 /// off older weeks.
-fn render_heatmap(daily: &[(Date, i64)], area: Rect, buf: &mut Buffer) {
+fn render_heatmap(daily: &[(Date, i64)], area: Rect, buf: &mut Buffer, theme: &Theme) {
     let peak = daily.iter().map(|(_, s)| *s).max().unwrap_or(0);
     let total: i64 = daily.iter().map(|(_, s)| *s).sum();
     let (current, best) = history::current_and_best_streak(daily);
@@ -190,11 +180,11 @@ fn render_heatmap(daily: &[(Date, i64)], area: Rect, buf: &mut Buffer) {
     .areas(area);
 
     Line::from(vec![
-        Span::styled(format!(" Total {}", format_minutes(total)), dim_style()),
-        Span::styled("  ·  ", dim_style()),
-        Span::styled(format!("Peak {}", format_minutes(peak)), dim_style()),
-        Span::styled("  ·  ", dim_style()),
-        Span::styled(format!("Streak {current}d (best {best}d)"), dim_style()),
+        Span::styled(format!(" Total {}", format_minutes(total)), theme.dim()),
+        Span::styled("  ·  ", theme.dim()),
+        Span::styled(format!("Peak {}", format_minutes(peak)), theme.dim()),
+        Span::styled("  ·  ", theme.dim()),
+        Span::styled(format!("Streak {current}d (best {best}d)"), theme.dim()),
     ])
     .render(stats_area, buf);
 
@@ -216,7 +206,7 @@ fn render_heatmap(daily: &[(Date, i64)], area: Rect, buf: &mut Buffer) {
     let base_x = grid_area.x + (grid_area.width.saturating_sub(grid_width)) / 2;
 
     for (row, label) in WEEKDAY_LABELS.iter().enumerate() {
-        buf.set_string(base_x, grid_area.y + row as u16, label, dim_style());
+        buf.set_string(base_x, grid_area.y + row as u16, label, theme.dim());
     }
 
     let mut last_month = None;
@@ -230,7 +220,7 @@ fn render_heatmap(daily: &[(Date, i64)], area: Rect, buf: &mut Buffer) {
             let month = first_of_month.0.month();
             if last_month != Some(month) {
                 last_month = Some(month);
-                buf.set_string(x, month_area.y, month_abbrev(month), dim_style());
+                buf.set_string(x, month_area.y, month_abbrev(month), theme.dim());
             }
         }
 
@@ -239,25 +229,24 @@ fn render_heatmap(daily: &[(Date, i64)], area: Rect, buf: &mut Buffer) {
             match cell {
                 Some((_, secs)) => {
                     let level = history::heatmap_level(*secs, peak);
-                    buf.set_string(x, y, "■", Style::new().fg(heatmap_color(level)));
+                    buf.set_string(x, y, "■", Style::new().fg(theme.heatmap_color(level)));
                 }
                 None => buf.set_string(x, y, " ", Style::default()),
             }
         }
     }
 
-    let mut legend = vec![Span::styled(" Less ", dim_style())];
+    let mut legend = vec![Span::styled(" Less ", theme.dim())];
     for level in 0..=4u8 {
-        legend.push(Span::styled("■", Style::new().fg(heatmap_color(level))));
+        legend.push(Span::styled(
+            "■",
+            Style::new().fg(theme.heatmap_color(level)),
+        ));
     }
-    legend.push(Span::styled(" More", dim_style()));
+    legend.push(Span::styled(" More", theme.dim()));
     Line::from(legend)
         .alignment(Alignment::Center)
         .render(legend_area, buf);
-}
-
-fn dim_style() -> Style {
-    Style::new().add_modifier(ratatui::style::Modifier::DIM)
 }
 
 fn format_minutes(total_secs: i64) -> String {

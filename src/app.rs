@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
 use ratatui::layout::{Constraint, Layout};
+use ratatui::style::Style;
 use ratatui::widgets::WidgetRef;
 use ratatui_toaster::{ToastBuilder, ToastEngine, ToastEngineBuilder, ToastPosition, ToastType};
 
@@ -61,7 +62,7 @@ pub struct App {
     mode: Mode,
 
     config: Config,
-    config_path: PathBuf,
+    config_dir: PathBuf,
     discord: Option<DiscordPresence>,
     /// True when Discord was disabled via the `--no-discord` CLI flag: the `:discord on/off`
     /// command still persists to `config.toml` for next launch, but won't (re)connect live.
@@ -90,10 +91,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db_path: PathBuf, config_path: PathBuf, no_discord: bool) -> Result<Self> {
+    pub fn new(db_path: PathBuf, config_dir: PathBuf, no_discord: bool) -> Result<Self> {
         let db = Database::open(&db_path)?;
         let today_total_base = Duration::from_secs(db.today_elapsed_secs()?.max(0) as u64);
-        let config = Config::load(&config_path);
+        let config = Config::load(&config_dir.join("config.toml"));
         let discord = (!no_discord && config.discord_enabled).then(DiscordPresence::new);
         Ok(Self {
             db,
@@ -101,7 +102,7 @@ impl App {
             session_id: None,
             mode: Mode::Normal,
             config,
-            config_path,
+            config_dir,
             discord,
             discord_session_override: no_discord,
             timer: TimerComponent,
@@ -121,6 +122,10 @@ impl App {
             media_watcher: MediaWatcher::new(MEDIA_POLL_INTERVAL),
             should_quit: false,
         })
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.config_dir.join("config.toml")
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -260,6 +265,7 @@ impl App {
                 None
             }
             Action::SetDiscordEnabled(enable) => Some(self.set_discord_enabled(*enable)),
+            Action::SetTheme(name) => Some(self.set_theme(name.clone())),
         }
     }
 
@@ -319,6 +325,7 @@ impl App {
             Command::Complete => Some(Action::CompleteSession),
             Command::Quit => Some(Action::Quit),
             Command::Discord(enable) => Some(Action::SetDiscordEnabled(enable)),
+            Command::Theme(name) => Some(Action::SetTheme(name)),
         }
     }
 
@@ -391,7 +398,7 @@ impl App {
     /// disconnects the live presence immediately.
     fn set_discord_enabled(&mut self, enable: bool) -> Action {
         self.config.discord_enabled = enable;
-        if let Err(err) = self.config.save(&self.config_path) {
+        if let Err(err) = self.config.save(&self.config_path()) {
             return Action::Toast(ToastType::Error, err.to_string());
         }
 
@@ -418,6 +425,23 @@ impl App {
                 if enable { "enabled" } else { "disabled" }
             ),
         )
+    }
+
+    /// Handles the `:theme <name>` command: validates the name against built-in and user themes
+    /// (from `<config_dir>/themes/*.toml`), then persists it to `config.toml`.
+    fn set_theme(&mut self, name: String) -> Action {
+        if crate::theme::resolve(&name, &self.config_dir).is_none() {
+            let available = crate::theme::available_names(&self.config_dir).join(", ");
+            return Action::Toast(
+                ToastType::Error,
+                format!("unknown theme: {name} (available: {available})"),
+            );
+        }
+        self.config.theme = name.clone();
+        if let Err(err) = self.config.save(&self.config_path()) {
+            return Action::Toast(ToastType::Error, err.to_string());
+        }
+        Action::Toast(ToastType::Success, format!("Theme set to {name}"))
     }
 
     /// Total time worked today: today's persisted time entries plus whatever portion of the
@@ -681,13 +705,16 @@ impl App {
             ])
             .areas(area);
 
+            let theme = self.config.resolved_theme(&self.config_dir);
             let ctx = AppContext {
                 mode: self.mode,
                 session: self.session.as_ref(),
                 today_total: self.today_total(),
+                theme: &theme,
             };
 
             let buf = frame.buffer_mut();
+            buf.set_style(area, Style::new().bg(theme.background));
             let (content_area, history_area) = if self.mode == Mode::History {
                 let [content_area, history_area] = Layout::vertical([
                     Constraint::Min(0),
@@ -812,10 +839,10 @@ mod tests {
     #[test]
     fn resuming_a_session_from_days_ago_adds_to_todays_total() {
         let path = temp_db_path("resume-old");
-        let config_path = temp_db_path("resume-old-config");
+        let config_dir = temp_db_path("resume-old-config");
         let _cleanup = TempDb(path.clone());
-        let _config_cleanup = TempDb(config_path.clone());
-        let mut app = App::new(path, config_path, true).unwrap();
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
 
         app.start_session("old-topic".to_string()).unwrap();
         app.pause().unwrap();
