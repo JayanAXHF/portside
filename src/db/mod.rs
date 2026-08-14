@@ -109,7 +109,11 @@ impl Database {
 
     pub fn update_session(&self, id: i64, session: &Session) -> Result<()> {
         let ended_at = if session.status == SessionStatus::Completed {
-            Some(OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc()).format(&Rfc3339)?)
+            Some(
+                OffsetDateTime::now_local()
+                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
+                    .format(&Rfc3339)?,
+            )
         } else {
             None
         };
@@ -147,9 +151,7 @@ impl Database {
              ORDER BY s.started_at DESC
              LIMIT 1",
         )?;
-        let session = stmt
-            .query_row([], row_to_session)
-            .optional()?;
+        let session = stmt.query_row([], row_to_session).optional()?;
         Ok(session)
     }
 

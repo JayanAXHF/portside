@@ -1,10 +1,10 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 /// Snapshot of the currently playing media, as reported by the platform media backend.
 ///

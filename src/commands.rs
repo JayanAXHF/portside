@@ -16,6 +16,7 @@ pub enum Command {
     History(Option<HistoryView>),
     Complete,
     Quit,
+    Discord(bool),
 }
 
 /// Parses a break duration argument: `5m` (minutes), `30s` (seconds), or a bare number (treated
@@ -42,9 +43,7 @@ pub fn parse(input: &str) -> Result<Command> {
 
     match verb {
         "topic" if !rest.is_empty() => Ok(Command::Topic(rest.to_string())),
-        "topic" => Err(AppError::InvalidCommand(
-            "usage: topic <name>".to_string(),
-        )),
+        "topic" => Err(AppError::InvalidCommand("usage: topic <name>".to_string())),
         "pause" => Ok(Command::Pause),
         "resume" | "play" => Ok(Command::Resume),
         "break" if rest.is_empty() => Ok(Command::ToggleBreak(None)),
@@ -61,6 +60,11 @@ pub fn parse(input: &str) -> Result<Command> {
             .ok_or_else(|| AppError::InvalidCommand(format!("invalid history view: {rest}"))),
         "complete" | "end" | "done" => Ok(Command::Complete),
         "quit" | "q" => Ok(Command::Quit),
+        "discord" if rest == "on" => Ok(Command::Discord(true)),
+        "discord" if rest == "off" => Ok(Command::Discord(false)),
+        "discord" => Err(AppError::InvalidCommand(
+            "usage: discord <on|off>".to_string(),
+        )),
         "" => Err(AppError::InvalidCommand("empty command".to_string())),
         other => Err(AppError::InvalidCommand(format!(
             "unknown command: {other}"
@@ -147,6 +151,14 @@ mod tests {
             Command::History(Some(HistoryView::Cumulative))
         );
         assert!(parse("history nonsense").is_err());
+    }
+
+    #[test]
+    fn parses_discord_toggle() {
+        assert_eq!(parse("discord on").unwrap(), Command::Discord(true));
+        assert_eq!(parse("discord off").unwrap(), Command::Discord(false));
+        assert!(parse("discord").is_err());
+        assert!(parse("discord maybe").is_err());
     }
 
     #[test]

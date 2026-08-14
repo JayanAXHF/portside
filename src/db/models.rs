@@ -102,9 +102,7 @@ impl Session {
     /// `App::pause`/`App::toggle_break` at the moment the session stops running.
     pub fn live_elapsed(&self) -> Duration {
         match self.running_since {
-            Some(since) if self.status == SessionStatus::Running => {
-                self.elapsed + since.elapsed()
-            }
+            Some(since) if self.status == SessionStatus::Running => self.elapsed + since.elapsed(),
             _ => self.elapsed,
         }
     }
@@ -195,7 +193,10 @@ mod tests {
             split_by_day(from, to),
             vec![
                 (from.date(), Duration::from_secs(3600)),
-                (datetime!(2026-08-10 00:00:00 +00:00).date(), Duration::from_secs(86_400)),
+                (
+                    datetime!(2026-08-10 00:00:00 +00:00).date(),
+                    Duration::from_secs(86_400)
+                ),
                 (to.date(), Duration::from_secs(3600)),
             ]
         );

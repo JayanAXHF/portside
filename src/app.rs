@@ -18,7 +18,9 @@ use crate::components::session_list::SessionListComponent;
 use crate::components::status_bar::StatusBar;
 use crate::components::timer::TimerComponent;
 use crate::components::{AppContext, Component};
+use crate::config::Config;
 use crate::db::{Database, Session, SessionStatus};
+use crate::discord::DiscordPresence;
 use crate::errors::{AppError, Result};
 use crate::event::{Event, EventHandler};
 use crate::history;
@@ -58,6 +60,13 @@ pub struct App {
     session_id: Option<i64>,
     mode: Mode,
 
+    config: Config,
+    config_path: PathBuf,
+    discord: Option<DiscordPresence>,
+    /// True when Discord was disabled via the `--no-discord` CLI flag: the `:discord on/off`
+    /// command still persists to `config.toml` for next launch, but won't (re)connect live.
+    discord_session_override: bool,
+
     timer: TimerComponent,
     clock: ClockComponent,
     now_playing: NowPlayingComponent,
@@ -81,14 +90,20 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db_path: PathBuf) -> Result<Self> {
+    pub fn new(db_path: PathBuf, config_path: PathBuf, no_discord: bool) -> Result<Self> {
         let db = Database::open(&db_path)?;
         let today_total_base = Duration::from_secs(db.today_elapsed_secs()?.max(0) as u64);
+        let config = Config::load(&config_path);
+        let discord = (!no_discord && config.discord_enabled).then(DiscordPresence::new);
         Ok(Self {
             db,
             session: None,
             session_id: None,
             mode: Mode::Normal,
+            config,
+            config_path,
+            discord,
+            discord_session_override: no_discord,
             timer: TimerComponent,
             clock: ClockComponent,
             now_playing: NowPlayingComponent::default(),
@@ -244,6 +259,7 @@ impl App {
                 self.mode = Mode::Normal;
                 None
             }
+            Action::SetDiscordEnabled(enable) => Some(self.set_discord_enabled(*enable)),
         }
     }
 
@@ -302,6 +318,7 @@ impl App {
             Command::History(view) => Some(Action::OpenHistory(view)),
             Command::Complete => Some(Action::CompleteSession),
             Command::Quit => Some(Action::Quit),
+            Command::Discord(enable) => Some(Action::SetDiscordEnabled(enable)),
         }
     }
 
@@ -338,6 +355,69 @@ impl App {
         if let Ok(secs) = self.db.today_elapsed_secs() {
             self.today_total_base = Duration::from_secs(secs.max(0) as u64);
         }
+    }
+
+    /// Pushes the active session's state to Discord Rich Presence, or clears it when there's no
+    /// active (non-completed) session. A no-op if Discord is disabled. Called from every method
+    /// that mutates session state, alongside `refresh_today_total_base`.
+    fn sync_discord_presence(&self) {
+        let Some(discord) = &self.discord else {
+            return;
+        };
+        match &self.session {
+            Some(session) if session.status != SessionStatus::Completed => {
+                let state = match session.status {
+                    SessionStatus::Running => "Running",
+                    SessionStatus::Paused => "Paused",
+                    SessionStatus::OnBreak => "On break",
+                    SessionStatus::Completed => unreachable!(),
+                };
+                let start = session
+                    .running_since_wall
+                    .filter(|_| session.status == SessionStatus::Running)
+                    .map(|t| t.unix_timestamp());
+                discord.set_activity(
+                    format!("Working on: {}", session.topic),
+                    state.to_string(),
+                    start,
+                );
+            }
+            _ => discord.clear(),
+        }
+    }
+
+    /// Handles the `:discord on`/`:discord off` command: always persists the setting to
+    /// `config.toml`, and — unless `--no-discord` was passed for this run — connects or
+    /// disconnects the live presence immediately.
+    fn set_discord_enabled(&mut self, enable: bool) -> Action {
+        self.config.discord_enabled = enable;
+        if let Err(err) = self.config.save(&self.config_path) {
+            return Action::Toast(ToastType::Error, err.to_string());
+        }
+
+        if self.discord_session_override {
+            return Action::Toast(
+                ToastType::Info,
+                format!(
+                    "Discord {} — saved for next launch (disabled via --no-discord this session)",
+                    if enable { "enabled" } else { "disabled" }
+                ),
+            );
+        }
+
+        if enable {
+            self.discord = Some(DiscordPresence::new());
+            self.sync_discord_presence();
+        } else {
+            self.discord = None;
+        }
+        Action::Toast(
+            ToastType::Success,
+            format!(
+                "Discord Rich Presence {}",
+                if enable { "enabled" } else { "disabled" }
+            ),
+        )
     }
 
     /// Total time worked today: today's persisted time entries plus whatever portion of the
@@ -431,6 +511,7 @@ impl App {
         self.session_id = Some(id);
         self.session = Some(session);
         self.refresh_today_total_base();
+        self.sync_discord_presence();
         Ok(format!("Started session: {topic}"))
     }
 
@@ -456,6 +537,7 @@ impl App {
         }
         self.restore(id, session);
         self.refresh_today_total_base();
+        self.sync_discord_presence();
         Ok("Paused".to_string())
     }
 
@@ -482,6 +564,7 @@ impl App {
         }
         self.restore(id, session);
         self.refresh_today_total_base();
+        self.sync_discord_presence();
         Ok("Resumed".to_string())
     }
 
@@ -523,6 +606,7 @@ impl App {
         }
         self.restore(id, session);
         self.refresh_today_total_base();
+        self.sync_discord_presence();
         Ok(message)
     }
 
@@ -551,6 +635,7 @@ impl App {
         }
         // Deliberately not restored: the session is finished, so there's no longer an active one.
         self.refresh_today_total_base();
+        self.sync_discord_presence();
         Ok(format!("Completed session: {topic}"))
     }
 
@@ -582,6 +667,7 @@ impl App {
         self.session_id = Some(row_id);
         self.session = Some(session);
         self.refresh_today_total_base();
+        self.sync_discord_presence();
         Ok(format!("Resumed session: {topic}"))
     }
 
@@ -625,7 +711,12 @@ impl App {
             .areas(clock_area);
             self.clock.render(clock_area, buf, &ctx);
 
-            if self.now_playing.current.as_ref().is_some_and(|info| info.playing) {
+            if self
+                .now_playing
+                .current
+                .as_ref()
+                .is_some_and(|info| info.playing)
+            {
                 let [_, now_playing_area] = Layout::horizontal([
                     Constraint::Min(0),
                     Constraint::Length(NOW_PLAYING_WIDTH.min(content_area.width)),
@@ -721,8 +812,10 @@ mod tests {
     #[test]
     fn resuming_a_session_from_days_ago_adds_to_todays_total() {
         let path = temp_db_path("resume-old");
+        let config_path = temp_db_path("resume-old-config");
         let _cleanup = TempDb(path.clone());
-        let mut app = App::new(path).unwrap();
+        let _config_cleanup = TempDb(config_path.clone());
+        let mut app = App::new(path, config_path, true).unwrap();
 
         app.start_session("old-topic".to_string()).unwrap();
         app.pause().unwrap();
