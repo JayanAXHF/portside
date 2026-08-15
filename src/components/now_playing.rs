@@ -2,21 +2,13 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, LineGauge, Padding, Paragraph, Widget};
-
-/// Colors the progress `LineGauge` renders with, chosen to read clearly against `PANEL_BG`
-/// rather than the app's default terminal background.
-const GAUGE_FILLED: Color = Color::White;
-const GAUGE_UNFILLED: Color = Color::Gray;
 
 use super::{AppContext, Component};
 use crate::action::Action;
 use crate::media::NowPlayingInfo;
-
-/// Background used to set this box apart from the surrounding terminal without a border.
-const PANEL_BG: Color = Color::Rgb(74, 74, 74);
 
 /// Small panel pinned to the top-right corner showing the current track, if any, set apart from
 /// the rest of the UI with a lighter background fill instead of a border. Unlike every other
@@ -29,9 +21,9 @@ pub struct NowPlayingComponent {
 }
 
 impl Component for NowPlayingComponent {
-    fn render(&mut self, area: Rect, buf: &mut Buffer, _ctx: &AppContext) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         let block = Block::new()
-            .style(Style::new().bg(PANEL_BG))
+            .style(Style::new().bg(ctx.theme.panel_bg))
             .padding(Padding {
                 left: 2,
                 right: 2,
@@ -83,8 +75,8 @@ impl Component for NowPlayingComponent {
                     format_mmss(elapsed),
                     format_mmss(info.duration)
                 ))
-                .filled_style(Style::new().fg(GAUGE_FILLED))
-                .unfilled_style(Style::new().fg(GAUGE_UNFILLED))
+                .filled_style(Style::new().fg(ctx.theme.gauge_filled))
+                .unfilled_style(Style::new().fg(ctx.theme.gauge_unfilled))
                 .render(gauge_area, buf);
         }
     }

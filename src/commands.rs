@@ -17,6 +17,7 @@ pub enum Command {
     Complete,
     Quit,
     Discord(bool),
+    Theme(String),
 }
 
 /// Parses a break duration argument: `5m` (minutes), `30s` (seconds), or a bare number (treated
@@ -65,6 +66,10 @@ pub fn parse(input: &str) -> Result<Command> {
         "discord" => Err(AppError::InvalidCommand(
             "usage: discord <on|off>".to_string(),
         )),
+        "theme" if rest.is_empty() => {
+            Err(AppError::InvalidCommand("usage: theme <name>".to_string()))
+        }
+        "theme" => Ok(Command::Theme(rest.to_string())),
         "" => Err(AppError::InvalidCommand("empty command".to_string())),
         other => Err(AppError::InvalidCommand(format!(
             "unknown command: {other}"
@@ -159,6 +164,16 @@ mod tests {
         assert_eq!(parse("discord off").unwrap(), Command::Discord(false));
         assert!(parse("discord").is_err());
         assert!(parse("discord maybe").is_err());
+    }
+
+    #[test]
+    fn parses_theme_command() {
+        assert_eq!(
+            parse("theme solarized").unwrap(),
+            Command::Theme("solarized".to_string())
+        );
+        assert!(parse("theme").is_err());
+        assert!(parse("theme   ").is_err());
     }
 
     #[test]

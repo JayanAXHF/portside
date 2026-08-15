@@ -8,23 +8,36 @@ fn default_true() -> bool {
     true
 }
 
+fn default_theme_name() -> String {
+    "default".to_string()
+}
+
 /// Persisted user settings, stored as `config.toml` in the platform config dir (separate from
-/// `portside.db`, which holds session data). Currently just the Discord Rich Presence toggle.
+/// `portside.db`, which holds session data).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_true")]
     pub discord_enabled: bool,
+    #[serde(default = "default_theme_name")]
+    pub theme: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             discord_enabled: true,
+            theme: default_theme_name(),
         }
     }
 }
 
 impl Config {
+    /// Resolves the configured theme name to an actual palette, falling back to the built-in
+    /// default if the name is unknown (e.g. a since-deleted user theme file).
+    pub fn resolved_theme(&self, config_dir: &Path) -> crate::theme::Theme {
+        crate::theme::resolve(&self.theme, config_dir).unwrap_or(crate::theme::DEFAULT)
+    }
+
     /// Best-effort: a missing file or a parse error both silently fall back to defaults, the same
     /// "collapse unrecoverable read failures rather than error out" convention as
     /// `media::fetch`'s `None` and `notify::fire_break_alert`'s `let _ = `.
@@ -73,10 +86,21 @@ mod tests {
         let path = std::env::temp_dir().join("portside-config-test-roundtrip.toml");
         let config = Config {
             discord_enabled: false,
+            theme: "solarized".to_string(),
         };
         config.save(&path).unwrap();
         let loaded = Config::load(&path);
         let _ = std::fs::remove_file(&path);
         assert!(!loaded.discord_enabled);
+        assert_eq!(loaded.theme, "solarized");
+    }
+
+    #[test]
+    fn load_defaults_theme_when_field_missing_from_old_config() {
+        let path = std::env::temp_dir().join("portside-config-test-missing-theme-field.toml");
+        std::fs::write(&path, "discord_enabled = false\n").unwrap();
+        let config = Config::load(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(config.theme, "default");
     }
 }

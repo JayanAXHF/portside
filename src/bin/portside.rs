@@ -11,12 +11,22 @@ struct Cli {
     /// setting — use the in-app `:discord off` command for that.
     #[arg(long)]
     no_discord: bool,
+
+    /// Write a starter theme file to <config_dir>/themes/<name>.toml (a copy of the default
+    /// theme's values) for editing, then exit without launching the TUI.
+    #[arg(long, value_name = "NAME")]
+    init_theme: Option<String>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(name) = cli.init_theme.as_deref() {
+        let path = portside_tui::theme::scaffold(&config_dir()?, name)?;
+        println!("Wrote {}", path.display());
+        return Ok(());
+    }
+
     let db_path = data_dir()?.join("portside.db");
-    let config_path = config_dir()?.join("config.toml");
 
     // Redirect our own stderr to a log file instead of the terminal. Subprocesses we spawn (e.g.
     // macOS's `osascript` for now-playing info, invoked on its own poll cadence in
@@ -36,7 +46,7 @@ fn main() -> Result<()> {
     }));
 
     let mut terminal = ratatui::init();
-    let mut app = App::new(db_path, config_path, cli.no_discord)?;
+    let mut app = App::new(db_path, config_dir()?, cli.no_discord)?;
     let result = app.run(&mut terminal);
     ratatui::restore();
     result

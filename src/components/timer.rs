@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 use tui_big_text::BigText;
@@ -54,12 +54,7 @@ impl Component for TimerComponent {
             .bold()
             .render(topic_area, buf);
 
-        let color = match session.status {
-            SessionStatus::Running => Color::Green,
-            SessionStatus::Paused => Color::Yellow,
-            SessionStatus::OnBreak => Color::Cyan,
-            SessionStatus::Completed => Color::DarkGray,
-        };
+        let color = ctx.theme.status_color(session.status);
         BigText::builder()
             .lines(vec![Line::from(format_hms(session.live_elapsed()))])
             .style(Style::new().fg(color))

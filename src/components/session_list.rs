@@ -1,6 +1,5 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Rect, Size};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Row, Table, TableState, Widget};
 use tui_scrollview::{ScrollView, ScrollViewState};
@@ -53,7 +52,7 @@ impl SessionListComponent {
 }
 
 impl Component for SessionListComponent {
-    fn render(&mut self, area: Rect, buf: &mut Buffer, _ctx: &AppContext) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         Clear.render(area, buf);
 
         let mut max_width = 0;
@@ -63,12 +62,7 @@ impl Component for SessionListComponent {
             .sessions
             .iter()
             .map(|(_, session)| {
-                let status_style = match session.status {
-                    SessionStatus::Running => Style::new().fg(Color::Green),
-                    SessionStatus::Paused => Style::new().fg(Color::Yellow),
-                    SessionStatus::OnBreak => Style::new().fg(Color::Cyan),
-                    SessionStatus::Completed => Style::new().add_modifier(Modifier::DIM),
-                };
+                let status_style = ctx.theme.status_style(session.status);
                 let status_text = match session.status {
                     SessionStatus::Running => "running",
                     SessionStatus::Paused => "paused",
@@ -111,7 +105,7 @@ impl Component for SessionListComponent {
         } else {
             Table::new(rows, widths)
         }
-        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(ctx.theme.highlight())
         .highlight_symbol("> ");
 
         let mut scrollview = ScrollView::new(Size::new((max_width + 2) as u16, area.height))

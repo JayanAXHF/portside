@@ -13,6 +13,7 @@ use ratatui::layout::Rect;
 
 use crate::action::{Action, Mode};
 use crate::db::Session;
+use crate::theme::Theme;
 
 /// Read-only snapshot of top-level app state passed to every component at render time, so
 /// components don't need mutable back-references into `App` just to know what to draw.
@@ -20,6 +21,7 @@ pub struct AppContext<'a> {
     pub mode: Mode,
     pub session: Option<&'a Session>,
     pub today_total: Duration,
+    pub theme: &'a Theme,
 }
 
 /// A self-contained UI panel. Presentation state (text buffers, list selection, scroll offsets)
