@@ -25,6 +25,12 @@
 
 ### Installation
 
+#### Using `cargo-binstall`
+
+```bash
+cargo binstall portside-tui
+```
+
 #### Using Cargo
 
 ```bash
