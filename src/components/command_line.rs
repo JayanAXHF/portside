@@ -5,6 +5,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::action::{Action, Mode};
+use crate::fixed_queue::FixedQueue;
 
 use super::{AppContext, Component};
 
@@ -13,6 +14,10 @@ use super::{AppContext, Component};
 /// renders its row so the bottom of the screen has a stable layout whether or not it's active.
 #[derive(Debug, Default)]
 pub struct CommandLineComponent {
+    /// Command History
+    history: FixedQueue<String, 500>,
+    last_key_was_history: bool,
+    history_index: usize,
     buffer: String,
     /// Char index into `buffer`, not byte index (so it survives multi-byte input safely).
     cursor: usize,
@@ -21,6 +26,8 @@ pub struct CommandLineComponent {
 impl CommandLineComponent {
     fn reset(&mut self) {
         self.buffer.clear();
+        self.history_index = 0;
+        self.last_key_was_history = false;
         self.cursor = 0;
     }
 
@@ -78,10 +85,12 @@ impl Component for CommandLineComponent {
                 use crossterm::event::KeyCode;
                 match key.code {
                     KeyCode::Char(c) => {
+                        self.last_key_was_history = false;
                         self.insert_char(c);
                         None
                     }
                     KeyCode::Backspace => {
+                        self.last_key_was_history = false;
                         self.backspace();
                         None
                     }
@@ -94,9 +103,40 @@ impl Component for CommandLineComponent {
                         None
                     }
                     KeyCode::Enter => {
+                        self.last_key_was_history = false;
                         let text = self.buffer.trim_start_matches(":").to_string();
+                        self.history.push(text.clone());
                         self.reset();
                         Some(Action::SubmitCommand(text))
+                    }
+                    KeyCode::Up => {
+                        if self.history.is_empty() {
+                            return None;
+                        }
+                        if self.buffer.is_empty() || self.last_key_was_history {
+                            self.last_key_was_history = true;
+                            self.history_index =
+                                (self.history_index + 1).min(self.history.len());
+                            self.buffer =
+                                self.history[self.history.len() - self.history_index].clone();
+                            self.cursor = self.buffer.chars().count();
+                        }
+                        None
+                    }
+                    KeyCode::Down => {
+                        if self.last_key_was_history {
+                            self.history_index = self.history_index.saturating_sub(1);
+                            if self.history_index == 0 {
+                                self.buffer.clear();
+                                self.last_key_was_history = false;
+                            } else {
+                                self.buffer = self.history
+                                    [self.history.len() - self.history_index]
+                                    .clone();
+                            }
+                            self.cursor = self.buffer.chars().count();
+                        }
+                        None
                     }
                     KeyCode::Esc => {
                         self.reset();

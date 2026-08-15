@@ -7,6 +7,7 @@ pub mod db;
 pub mod discord;
 pub mod errors;
 pub mod event;
+pub mod fixed_queue;
 pub mod history;
 pub mod media;
 pub mod notify;
