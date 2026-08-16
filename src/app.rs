@@ -20,6 +20,7 @@ use crate::components::status_bar::StatusBar;
 use crate::components::timer::TimerComponent;
 use crate::components::{AppContext, Component};
 use crate::config::Config;
+use crate::db::models;
 use crate::db::{Database, Session, SessionStatus};
 use crate::discord::DiscordPresence;
 use crate::errors::{AppError, Result};
@@ -204,6 +205,18 @@ impl App {
                 let result = self.resume_previous(*id);
                 Some(self.toast_result(result))
             }
+            Action::AddSession {
+                topic,
+                start,
+                duration,
+            } => {
+                let result = self.add_session(topic.clone(), *start, *duration);
+                Some(self.toast_result(result))
+            }
+            Action::RemoveSession(id) => {
+                let result = self.remove_session(*id);
+                Some(self.toast_result(result))
+            }
             Action::OpenSessionList => {
                 self.mode = Mode::SessionList;
                 match self.db.list_recent_sessions(50) {
@@ -326,6 +339,16 @@ impl App {
             Command::Quit => Some(Action::Quit),
             Command::Discord(enable) => Some(Action::SetDiscordEnabled(enable)),
             Command::Theme(name) => Some(Action::SetTheme(name)),
+            Command::Add {
+                topic,
+                start,
+                duration,
+            } => Some(Action::AddSession {
+                topic,
+                start,
+                duration,
+            }),
+            Command::Remove(id) => Some(Action::RemoveSession(id)),
         }
     }
 
@@ -695,6 +718,70 @@ impl App {
         Ok(format!("Resumed session: {topic}"))
     }
 
+    /// Handles `:add <topic> <start> <duration>`: inserts a standalone, already-completed
+    /// session directly into history. Deliberately does not touch `self.session`/`self.session_id`
+    /// — a posthumous entry is not the active session, so none of the `take_active`/`restore`
+    /// dance the other mutators use is needed here.
+    fn add_session(
+        &mut self,
+        topic: String,
+        start: time::OffsetDateTime,
+        duration: Duration,
+    ) -> Result<String> {
+        if duration.is_zero() {
+            return Err(AppError::InvalidCommand(
+                "duration must be greater than zero".to_string(),
+            ));
+        }
+        let end = start + time::Duration::seconds(duration.as_secs() as i64);
+
+        if let Some((_, existing)) = self.db.sessions_overlapping(start, end)?.into_iter().next() {
+            return Err(AppError::InvalidCommand(format!(
+                "overlaps with existing session \"{}\" starting {}",
+                existing.topic, existing.started_at
+            )));
+        }
+
+        let session = Session {
+            topic: topic.clone(),
+            started_at: start,
+            elapsed: duration,
+            status: SessionStatus::Completed,
+            running_since: None,
+            running_since_wall: None,
+        };
+        let id = self.db.insert_completed_session(&session, end)?;
+
+        for (date, secs) in models::split_by_day(start, end) {
+            self.db
+                .add_time_entry(id, &history::format_ymd(date), secs.as_secs() as i64)?;
+        }
+
+        self.refresh_today_total_base();
+        Ok(format!("Added posthumous session: {topic}"))
+    }
+
+    /// Handles `:remove <id>` / `:rm <id>`: deletes a session and its time entries. If `id` is
+    /// the active session, clears it (via `take_active` and simply not restoring it) so the app
+    /// falls back to "no active session" instead of pointing at a now-deleted row.
+    fn remove_session(&mut self, id: i64) -> Result<String> {
+        let (_, session) = self
+            .db
+            .get_session(id)?
+            .ok_or_else(|| AppError::InvalidCommand(format!("no session with id {id}")))?;
+
+        if self.session_id == Some(id) {
+            self.take_active();
+            self.session_id = None;
+            // Deliberately not restored: the active session no longer exists.
+        }
+
+        self.db.delete_session(id)?;
+        self.refresh_today_total_base();
+        self.sync_discord_presence();
+        Ok(format!("Removed session: {}", session.topic))
+    }
+
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -867,5 +954,89 @@ mod tests {
             "resuming an old session should add newly-accrued time to today's total \
              (before = {before:?}, after = {after:?})"
         );
+    }
+
+    #[test]
+    fn add_session_persists_a_completed_session_and_its_time_entries() {
+        let path = temp_db_path("add-session");
+        let config_dir = temp_db_path("add-session-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        let start = history::today_local()
+            .with_hms(9, 0, 0)
+            .unwrap()
+            .assume_offset(time::UtcOffset::UTC);
+        app.add_session("writing".to_string(), start, Duration::from_secs(45 * 60))
+            .unwrap();
+
+        let today_str = history::format_ymd(history::today_local());
+        let totals = app.db.daily_totals_since(&today_str).unwrap();
+        assert!(totals.contains(&(today_str, 45 * 60)));
+    }
+
+    #[test]
+    fn add_session_rejects_overlapping_interval() {
+        let path = temp_db_path("add-session-overlap");
+        let config_dir = temp_db_path("add-session-overlap-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        let start = history::today_local()
+            .with_hms(9, 0, 0)
+            .unwrap()
+            .assume_offset(time::UtcOffset::UTC);
+        app.add_session("writing".to_string(), start, Duration::from_secs(3600))
+            .unwrap();
+
+        let overlapping_start = start + time::Duration::minutes(30);
+        let result = app.add_session(
+            "reading".to_string(),
+            overlapping_start,
+            Duration::from_secs(1800),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn remove_session_deletes_an_inactive_session() {
+        let path = temp_db_path("remove-inactive");
+        let config_dir = temp_db_path("remove-inactive-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        let start = history::today_local()
+            .with_hms(9, 0, 0)
+            .unwrap()
+            .assume_offset(time::UtcOffset::UTC);
+        app.add_session("writing".to_string(), start, Duration::from_secs(3600))
+            .unwrap();
+        let id = app.db.list_recent_sessions(1).unwrap()[0].0;
+
+        app.remove_session(id).unwrap();
+
+        assert!(app.db.get_session(id).unwrap().is_none());
+        assert!(app.remove_session(id).is_err());
+    }
+
+    #[test]
+    fn remove_session_clears_the_active_session() {
+        let path = temp_db_path("remove-active");
+        let config_dir = temp_db_path("remove-active-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        app.start_session("live-topic".to_string()).unwrap();
+        let id = app.session_id.unwrap();
+
+        app.remove_session(id).unwrap();
+
+        assert!(app.session_id.is_none());
+        assert!(app.session.is_none());
+        assert!(app.db.get_session(id).unwrap().is_none());
     }
 }

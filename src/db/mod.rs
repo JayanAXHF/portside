@@ -107,6 +107,64 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Inserts a fully-formed, already-completed session with an explicit `ended_at`, for the
+    /// `:add` posthumous-session command. Distinct from `insert_session` + `update_session`
+    /// because `update_session` always stamps `ended_at` with the current time, which would be
+    /// wrong for a backdated session.
+    pub fn insert_completed_session(
+        &self,
+        session: &Session,
+        ended_at: OffsetDateTime,
+    ) -> Result<i64> {
+        let topic = self.get_or_create_topic(&session.topic)?;
+        let started_at = session.started_at.format(&Rfc3339)?;
+        let ended_at = ended_at.format(&Rfc3339)?;
+        self.conn.execute(
+            "INSERT INTO sessions (topic_id, started_at, ended_at, elapsed_secs, status)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                topic.id,
+                started_at,
+                ended_at,
+                session.elapsed.as_secs() as i64,
+                session.status.as_str(),
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Sessions whose `[started_at, started_at + elapsed_secs)` interval overlaps
+    /// `[start, end)`, used by `:add` to reject posthumous entries that double-count time already
+    /// recorded elsewhere. Filters in Rust after parsing `started_at` rather than comparing
+    /// RFC3339 strings in SQL, since each row keeps its own original offset and a string range
+    /// comparison isn't reliably chronological across offset changes (DST, travel). A full-table
+    /// scan is an acceptable tradeoff for a personal tool's session volumes.
+    ///
+    /// Known limitation: `[started_at, started_at + elapsed)` is only a proxy for a session's
+    /// real busy interval — a paused/resumed session's actual wall-clock activity can be
+    /// non-contiguous. The schema only tracks day-level time entries, not per-segment clock
+    /// times, so this is the best available check without a schema change.
+    pub fn sessions_overlapping(
+        &self,
+        start: OffsetDateTime,
+        end: OffsetDateTime,
+    ) -> Result<Vec<(i64, Session)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status
+             FROM sessions s JOIN topics t ON t.id = s.topic_id",
+        )?;
+        let rows = stmt
+            .query_map([], row_to_session)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, s)| {
+                let s_end = s.started_at + time::Duration::seconds(s.elapsed.as_secs() as i64);
+                s.started_at < end && s_end > start
+            })
+            .collect())
+    }
+
     pub fn update_session(&self, id: i64, session: &Session) -> Result<()> {
         let ended_at = if session.status == SessionStatus::Completed {
             Some(
@@ -199,6 +257,19 @@ impl Database {
             .query_map(params![since], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Deletes a session and its `session_time_entries` rows. Used by `:remove`/`:rm`; the caller
+    /// is responsible for clearing `App`'s active-session state first if `id` is the active
+    /// session, since the DB has no notion of "active."
+    pub fn delete_session(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM session_time_entries WHERE session_id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     pub fn get_session(&self, id: i64) -> Result<Option<(i64, Session)>> {
@@ -349,6 +420,82 @@ mod tests {
         db.add_time_entry(id, &today_str, 45).unwrap();
 
         assert_eq!(db.today_elapsed_secs().unwrap(), 75);
+    }
+
+    #[test]
+    fn insert_completed_session_round_trips_with_explicit_ended_at() {
+        let db = Database::open_in_memory().unwrap();
+        let mut session = Session::new("writing".to_string());
+        session.started_at -= time::Duration::hours(2);
+        session.elapsed = Duration::from_secs(3600);
+        session.status = SessionStatus::Completed;
+        let ended_at = session.started_at + time::Duration::hours(1);
+
+        let id = db.insert_completed_session(&session, ended_at).unwrap();
+
+        let (fetched_id, fetched) = db.get_session(id).unwrap().unwrap();
+        assert_eq!(fetched_id, id);
+        assert_eq!(fetched.topic, "writing");
+        assert_eq!(fetched.elapsed, Duration::from_secs(3600));
+        assert_eq!(fetched.status, SessionStatus::Completed);
+    }
+
+    #[test]
+    fn sessions_overlapping_detects_overlap_and_ignores_disjoint_or_adjacent() {
+        let db = Database::open_in_memory().unwrap();
+        let mut existing = Session::new("existing".to_string());
+        existing.started_at -= time::Duration::hours(3);
+        existing.elapsed = Duration::from_secs(3600); // [-3h, -2h)
+        existing.status = SessionStatus::Completed;
+        let ended_at = existing.started_at + time::Duration::hours(1);
+        db.insert_completed_session(&existing, ended_at).unwrap();
+
+        let base = existing.started_at;
+
+        // Overlaps the middle of the existing session.
+        let overlapping = db
+            .sessions_overlapping(
+                base + time::Duration::minutes(30),
+                base + time::Duration::minutes(90),
+            )
+            .unwrap();
+        assert_eq!(overlapping.len(), 1);
+
+        // Disjoint, well before the existing session.
+        let disjoint = db
+            .sessions_overlapping(
+                base - time::Duration::hours(2),
+                base - time::Duration::hours(1),
+            )
+            .unwrap();
+        assert!(disjoint.is_empty());
+
+        // Adjacent (ends exactly where the existing session starts) — half-open, no overlap.
+        let adjacent = db
+            .sessions_overlapping(base - time::Duration::hours(1), base)
+            .unwrap();
+        assert!(adjacent.is_empty());
+    }
+
+    #[test]
+    fn delete_session_removes_session_and_its_time_entries() {
+        let db = Database::open_in_memory().unwrap();
+        let session = Session::new("to-delete".to_string());
+        let id = db.insert_session(&session).unwrap();
+        let today_str = crate::history::format_ymd(crate::history::today_local());
+        db.add_time_entry(id, &today_str, 60).unwrap();
+        assert_eq!(db.today_elapsed_secs().unwrap(), 60);
+
+        db.delete_session(id).unwrap();
+
+        assert!(db.get_session(id).unwrap().is_none());
+        assert_eq!(db.today_elapsed_secs().unwrap(), 0);
+    }
+
+    #[test]
+    fn delete_session_on_unknown_id_is_a_no_op() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.delete_session(999).is_ok());
     }
 
     #[test]

@@ -94,6 +94,8 @@ Enter command mode with `:` and type one of the following:
 | `sessions`                  | Open the session list drawer                                      |
 | `history` / `hist [view]`   | Open the history pane (`daily`, `weekly`, or `cumulative`)        |
 | `complete` / `end` / `done` | Mark the active session as complete                               |
+| `add <topic> <start> <duration>` | Log a completed session that already happened (e.g. `add writing "2026-08-15 09:00" 45m`) |
+| `remove <id>` / `rm <id>`   | Delete a session and its recorded time by id                      |
 | `quit` / `q`                | Quit the application                                              |
 
 #### Session list

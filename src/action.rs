@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crossterm::event::KeyEvent;
 use ratatui_toaster::ToastType;
-use time::Date;
+use time::{Date, OffsetDateTime};
 
 use crate::commands::Command;
 use crate::db::Session;
@@ -44,6 +44,12 @@ pub enum Action {
     ToggleBreak(Option<Duration>),
     CompleteSession,
     ResumePrevious(Option<i64>),
+    AddSession {
+        topic: String,
+        start: OffsetDateTime,
+        duration: Duration,
+    },
+    RemoveSession(i64),
 
     OpenSessionList,
     CloseSessionList,

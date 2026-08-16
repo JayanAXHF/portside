@@ -13,7 +13,7 @@ fn now_local() -> OffsetDateTime {
 /// Splits the half-open interval `[from, to)` into per-local-calendar-day chunks. Almost always
 /// a single entry; produces more than one only if the interval spans a midnight boundary (e.g. a
 /// session left running across the day change). Returns an empty vec if `to <= from`.
-fn split_by_day(from: OffsetDateTime, to: OffsetDateTime) -> Vec<(Date, Duration)> {
+pub(crate) fn split_by_day(from: OffsetDateTime, to: OffsetDateTime) -> Vec<(Date, Duration)> {
     if to <= from {
         return Vec::new();
     }
