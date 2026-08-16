@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::Parser;
 use portside_tui::app::App;
+use portside_tui::db::Database;
 use portside_tui::errors::{AppError, Result};
 
 /// A terminal UI for tracking work sessions.
@@ -16,6 +18,10 @@ struct Cli {
     /// theme's values) for editing, then exit without launching the TUI.
     #[arg(long, value_name = "NAME")]
     init_theme: Option<String>,
+
+    /// Print today's total and exit
+    #[arg(long)]
+    todays_total: bool,
 }
 
 fn main() -> Result<()> {
@@ -44,6 +50,14 @@ fn main() -> Result<()> {
         ratatui::restore();
         default_hook(info);
     }));
+
+    if cli.todays_total {
+        let db = Database::open(&db_path)?;
+        let tt = db.today_elapsed_secs()?;
+        let formatted = format_today(Duration::from_secs(tt as u64));
+        println!("{formatted}");
+        return Ok(());
+    }
 
     let mut terminal = ratatui::init();
     let mut app = App::new(db_path, config_dir()?, cli.no_discord)?;
@@ -84,3 +98,13 @@ fn redirect_stderr_to_log(path: &std::path::Path) {
 
 #[cfg(not(unix))]
 fn redirect_stderr_to_log(_path: &std::path::Path) {}
+
+fn format_today(d: Duration) -> String {
+    let total_min = d.as_secs() / 60;
+    let (h, m) = (total_min / 60, total_min % 60);
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
+}
