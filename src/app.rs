@@ -218,12 +218,28 @@ impl App {
                 Some(self.toast_result(result))
             }
             Action::SetSessionDescription { id, text } => {
-                let result = self.set_session_description(*id, text.clone());
-                Some(self.toast_result(result))
+                match self.set_session_description(*id, text.clone()) {
+                    Ok(msg) => Some(Action::Toast(ToastType::Success, msg)),
+                    Err(err) => {
+                        // Re-enter the editor with what the user typed rather than discarding it
+                        // silently — they only see the error toast otherwise.
+                        self.session_list
+                            .handle_action(&Action::RestoreDescriptionEdit(text.clone()));
+                        Some(Action::Toast(ToastType::Error, err.to_string()))
+                    }
+                }
             }
-            Action::SetSessionTags { id, tags } => {
-                let result = self.set_session_tags(*id, tags.clone());
-                Some(self.toast_result(result))
+            Action::SetSessionTags { id, tags } => match self.set_session_tags(*id, tags.clone()) {
+                Ok(msg) => Some(Action::Toast(ToastType::Success, msg)),
+                Err(err) => {
+                    self.session_list
+                        .handle_action(&Action::RestoreTagsEdit(tags.join(", ")));
+                    Some(Action::Toast(ToastType::Error, err.to_string()))
+                }
+            },
+            Action::RestoreDescriptionEdit(_) | Action::RestoreTagsEdit(_) => {
+                self.session_list.handle_action(action);
+                None
             }
             Action::OpenSessionList => {
                 self.mode = Mode::SessionList;
@@ -234,6 +250,10 @@ impl App {
             }
             Action::CloseSessionList => {
                 self.mode = Mode::Normal;
+                // Reset the drawer's internal sub-view (Detail/Edit*) so reopening it always
+                // starts at the top-level list, rather than resuming a stale (possibly
+                // unsaved-edit-holding) sub-view from before it was closed via `Tab`.
+                self.session_list.handle_action(action);
                 None
             }
             Action::SessionsLoaded(_) => {
@@ -1457,5 +1477,59 @@ mod tests {
         // A second `Esc` (now unfocused) closes the drawer.
         app.process(Action::Key(key(KeyCode::Esc)));
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// Regression test: a failed description save must not silently discard what the user
+    /// typed. Forces a failure by deleting the target session out from under the editor, then
+    /// verifies the editor reopens (rather than dropping back to a plain, non-editing `Detail`
+    /// view) so the text isn't lost.
+    #[test]
+    fn failed_description_save_restores_the_edit_view_instead_of_discarding_input() {
+        let path = temp_db_path("describe-fail-restore");
+        let config_dir = temp_db_path("describe-fail-restore-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        // An active session (so `set_session_description` has something to fall back to) plus a
+        // second, inactive session that we'll delete out from under an in-progress edit — the
+        // active-session update path doesn't re-validate existence (it just updates in-memory
+        // state), so the target must be the *inactive* one to actually exercise the failure path.
+        app.start_session("live-topic".to_string()).unwrap();
+        let start = history::today_local()
+            .with_hms(9, 0, 0)
+            .unwrap()
+            .assume_offset(time::UtcOffset::UTC);
+        app.add_session("other-topic".to_string(), start, Duration::from_secs(60))
+            .unwrap();
+        let other_id = app
+            .db
+            .list_recent_sessions(10)
+            .unwrap()
+            .into_iter()
+            .find(|(_, s)| s.topic == "other-topic")
+            .unwrap()
+            .0;
+
+        app.process(Action::OpenSessionList);
+        if app.session_list.selected_id() != Some(other_id) {
+            app.process(Action::Key(key(KeyCode::Char('j'))));
+        }
+        assert_eq!(app.session_list.selected_id(), Some(other_id));
+
+        app.process(Action::Key(key(KeyCode::Char('i'))));
+        app.process(Action::Key(key(KeyCode::Char('d'))));
+        type_str(&mut app, "partial");
+
+        // Simulate the save failing (e.g. a DB error) by deleting the row out from under the
+        // in-progress edit, then attempt to save.
+        app.db.delete_session(other_id).unwrap();
+        app.process(Action::Key(key(KeyCode::Enter)));
+
+        assert!(
+            app.session_list.cursor().is_some(),
+            "the description editor should still be open (with its text) after a failed save, \
+             not silently dropped back to a non-editing view"
+        );
     }
 }
