@@ -29,6 +29,8 @@ pub enum Command {
     Remove(i64),
     /// `id: None` targets the active session.
     Describe { id: Option<i64>, text: String },
+    /// `id: None` targets the active session. Replaces the full tag set.
+    Tag { id: Option<i64>, tags: Vec<String> },
 }
 
 /// Parses a duration argument: `1h`/`5m`/`30s` (optionally combined, e.g. `1h30m`), or a bare
@@ -205,6 +207,24 @@ pub fn parse(input: &str) -> Result<Command> {
             } else {
                 Ok(Command::Describe { id, text })
             }
+        }
+        "tag" if rest.is_empty() => Err(AppError::InvalidCommand(
+            "usage: tag [id] <tag1,tag2,...>".to_string(),
+        )),
+        "tag" => {
+            let (id, tags_str) = match rest.split_once(char::is_whitespace) {
+                Some((maybe_id, tags_str)) if maybe_id.parse::<i64>().is_ok() => {
+                    (Some(maybe_id.parse().unwrap()), tags_str.trim())
+                }
+                _ => (None, rest),
+            };
+            let tags: Vec<String> = tags_str
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            Ok(Command::Tag { id, tags })
         }
         "" => Err(AppError::InvalidCommand("empty command".to_string())),
         other => Err(AppError::InvalidCommand(format!(
@@ -431,6 +451,56 @@ mod tests {
                 text: "42".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn parses_tag_command_for_active_session() {
+        assert_eq!(
+            parse("tag rust, study").unwrap(),
+            Command::Tag {
+                id: None,
+                tags: vec!["rust".to_string(), "study".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tag_command_with_explicit_id() {
+        assert_eq!(
+            parse("tag 42 rust,study").unwrap(),
+            Command::Tag {
+                id: Some(42),
+                tags: vec!["rust".to_string(), "study".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn tag_drops_empty_pieces_and_trims_whitespace() {
+        assert_eq!(
+            parse("tag rust,, study ,").unwrap(),
+            Command::Tag {
+                id: None,
+                tags: vec!["rust".to_string(), "study".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn tag_with_no_commas_is_a_single_tag() {
+        assert_eq!(
+            parse("tag rust").unwrap(),
+            Command::Tag {
+                id: None,
+                tags: vec!["rust".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn tag_requires_an_argument() {
+        assert!(parse("tag").is_err());
+        assert!(parse("tag   ").is_err());
     }
 
     #[test]

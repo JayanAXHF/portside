@@ -11,4 +11,5 @@ pub mod fixed_queue;
 pub mod history;
 pub mod media;
 pub mod notify;
+pub mod session_filter;
 pub mod theme;

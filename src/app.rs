@@ -221,6 +221,10 @@ impl App {
                 let result = self.set_session_description(*id, text.clone());
                 Some(self.toast_result(result))
             }
+            Action::SetSessionTags { id, tags } => {
+                let result = self.set_session_tags(*id, tags.clone());
+                Some(self.toast_result(result))
+            }
             Action::OpenSessionList => {
                 self.mode = Mode::SessionList;
                 match self.db.list_recent_sessions(50) {
@@ -354,6 +358,7 @@ impl App {
             }),
             Command::Remove(id) => Some(Action::RemoveSession(id)),
             Command::Describe { id, text } => Some(Action::SetSessionDescription { id, text }),
+            Command::Tag { id, tags } => Some(Action::SetSessionTags { id, tags }),
         }
     }
 
@@ -831,6 +836,43 @@ impl App {
         Ok("Description updated".to_string())
     }
 
+    /// Handles `:tag [id] <tag1,tag2,...>` (and, later, the details-pane inline editor): replaces
+    /// the full tag set on `id`, or the active session when `id` is `None`. Same active-session
+    /// in-memory sync as `set_session_description`.
+    fn set_session_tags(&mut self, id: Option<i64>, tags: Vec<String>) -> Result<String> {
+        let target_id = match id {
+            Some(id) => id,
+            None => self
+                .session_id
+                .ok_or_else(|| AppError::InvalidCommand("no active session".to_string()))?,
+        };
+
+        if self.session_id == Some(target_id) {
+            let Some((id, mut session)) = self.take_active() else {
+                return Err(AppError::InvalidCommand("no active session".to_string()));
+            };
+            session.tags = tags.clone();
+            if let Err(err) = self.db.set_session_tags(id, &tags) {
+                self.restore(id, session);
+                return Err(err);
+            }
+            self.restore(id, session);
+        } else {
+            self.db.get_session(target_id)?.ok_or_else(|| {
+                AppError::InvalidCommand(format!("no session with id {target_id}"))
+            })?;
+            self.db.set_session_tags(target_id, &tags)?;
+        }
+
+        if self.mode == Mode::SessionList {
+            let sessions = self.db.list_recent_sessions(50)?;
+            self.session_list
+                .handle_action(&Action::SessionsLoaded(sessions));
+        }
+
+        Ok("Tags updated".to_string())
+    }
+
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -1166,6 +1208,85 @@ mod tests {
 
         assert!(
             app.set_session_description(None, "text".to_string())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn set_session_tags_updates_the_active_session_in_memory_and_in_the_db() {
+        let path = temp_db_path("tag-active");
+        let config_dir = temp_db_path("tag-active-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        app.start_session("live-topic".to_string()).unwrap();
+        let id = app.session_id.unwrap();
+
+        app.set_session_tags(None, vec!["rust".to_string(), "study".to_string()])
+            .unwrap();
+
+        assert_eq!(
+            app.session.as_ref().unwrap().tags,
+            vec!["rust".to_string(), "study".to_string()]
+        );
+        assert_eq!(
+            app.db.get_session(id).unwrap().unwrap().1.tags,
+            vec!["rust".to_string(), "study".to_string()]
+        );
+    }
+
+    #[test]
+    fn set_session_tags_targets_an_explicit_inactive_session() {
+        let path = temp_db_path("tag-inactive");
+        let config_dir = temp_db_path("tag-inactive-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        let start = history::today_local()
+            .with_hms(9, 0, 0)
+            .unwrap()
+            .assume_offset(time::UtcOffset::UTC);
+        app.add_session("writing".to_string(), start, Duration::from_secs(3600))
+            .unwrap();
+        let id = app.db.list_recent_sessions(1).unwrap()[0].0;
+
+        app.set_session_tags(Some(id), vec!["archived".to_string()])
+            .unwrap();
+        assert_eq!(
+            app.db.get_session(id).unwrap().unwrap().1.tags,
+            vec!["archived".to_string()]
+        );
+
+        app.set_session_tags(Some(id), vec![]).unwrap();
+        assert!(app.db.get_session(id).unwrap().unwrap().1.tags.is_empty());
+    }
+
+    #[test]
+    fn set_session_tags_rejects_an_unknown_id() {
+        let path = temp_db_path("tag-unknown");
+        let config_dir = temp_db_path("tag-unknown-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        assert!(
+            app.set_session_tags(Some(9999), vec!["rust".to_string()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn set_session_tags_without_an_id_or_active_session_is_an_error() {
+        let path = temp_db_path("tag-no-active");
+        let config_dir = temp_db_path("tag-no-active-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        assert!(
+            app.set_session_tags(None, vec!["rust".to_string()])
                 .is_err()
         );
     }

@@ -55,6 +55,11 @@ pub enum Action {
         id: Option<i64>,
         text: String,
     },
+    /// `id: None` targets the active session. Replaces the full tag set.
+    SetSessionTags {
+        id: Option<i64>,
+        tags: Vec<String>,
+    },
 
     OpenSessionList,
     CloseSessionList,
