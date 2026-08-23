@@ -230,6 +230,14 @@ pub fn parse(input: &str) -> Result<Command> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect();
+            // A comma-only (or otherwise all-empty) argument would otherwise silently replace
+            // the target session's tags with an empty set instead of surfacing the malformed
+            // input — reject it rather than clearing tags by accident.
+            if tags.is_empty() {
+                return Err(AppError::InvalidCommand(
+                    "usage: tag [id] <tag1,tag2,...>".to_string(),
+                ));
+            }
             Ok(Command::Tag { id, tags })
         }
         "" => Err(AppError::InvalidCommand("empty command".to_string())),
@@ -507,6 +515,15 @@ mod tests {
     fn tag_requires_an_argument() {
         assert!(parse("tag").is_err());
         assert!(parse("tag   ").is_err());
+    }
+
+    /// A comma-only (or otherwise all-empty) argument must be rejected rather than silently
+    /// producing an empty tag set, which would replace the target session's tags with nothing.
+    #[test]
+    fn tag_rejects_input_that_resolves_to_no_tags() {
+        assert!(parse("tag ,,,").is_err());
+        assert!(parse("tag ,  ,").is_err());
+        assert!(parse("tag 42 ,,,").is_err());
     }
 
     #[test]

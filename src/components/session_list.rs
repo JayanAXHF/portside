@@ -27,6 +27,14 @@ enum SessionListView {
     EditTags(TextArea<'static>),
 }
 
+/// `Block::inner` reserves a row for the title whenever one is set, even without `Borders::TOP`
+/// (see `ratatui_widgets::block::Block::inner`'s `has_title_at_position` check) — since
+/// `SessionListComponent` always sets a title, every row offset computed relative to the `inner`
+/// area passed to `render_list`/`render_detail` sits one row lower than the outer `area` passed
+/// to `render`/returned by `cursor()` (which `App::draw` positions the terminal cursor relative
+/// to). All `cursor()` row values must add this back.
+const TITLE_ROWS: u16 = 1;
+
 fn format_hhmmss(secs: u64) -> String {
     format!(
         "{:02}:{:02}:{:02}",
@@ -104,13 +112,18 @@ impl SessionListComponent {
     }
 
     /// Recomputes `filtered` from `sessions` and the search box's current text, then tries to
-    /// keep the previously-selected session selected (by id) in the new filtered list, falling
-    /// back to the first row, or no selection if the filtered list is empty. Called whenever
-    /// `sessions` changes (`Action::SessionsLoaded`) or the search text changes (every keystroke
-    /// while `searching`).
-    fn recompute_filtered(&mut self) {
+    /// select `preferred_id` in the new filtered list, falling back to the first row, or no
+    /// selection if the filtered list is empty. Called whenever `sessions` changes
+    /// (`Action::SessionsLoaded`) or the search text changes (every keystroke while `searching`).
+    ///
+    /// `preferred_id` is taken as a parameter rather than read via `self.selected_id()` inside
+    /// this function: at the `SessionsLoaded` call site, `self.sessions` has already been
+    /// replaced by the time this runs, so `self.selected_id()` would resolve `self.state`'s
+    /// still-old selected index against `self.filtered` (also still old) and then index into the
+    /// *new* `self.sessions` — silently reinterpreting a stale row identity as a different
+    /// session's id. Callers must capture the id *before* mutating `self.sessions`.
+    fn recompute_filtered(&mut self, preferred_id: Option<i64>) {
         let query = self.search.lines()[0].clone();
-        let preferred_id = self.selected_id();
 
         self.filtered = self
             .sessions
@@ -261,13 +274,19 @@ impl SessionListComponent {
         lines.push(Line::from(hint).dim());
 
         Paragraph::new(lines).render(area, buf);
-        self.description_row = description_row;
-        self.tags_row = tags_row;
+        // Clamp to the last visible row: on a terminal short enough that the description/tags
+        // line would fall past `area`'s bottom edge, this keeps the active editor (and its
+        // cursor) rendered on-screen rather than clipped or placed out of bounds — the
+        // surrounding text will overlap in that case, but a short terminal is expected to be
+        // cramped, not broken.
+        let last_row = area.height.saturating_sub(1);
+        self.description_row = description_row.min(last_row);
+        self.tags_row = tags_row.min(last_row);
 
         match &self.view {
             SessionListView::EditDescription(ta) => {
                 let row_area = Rect {
-                    y: area.y + description_row,
+                    y: area.y + self.description_row,
                     height: 1,
                     ..area
                 };
@@ -275,7 +294,7 @@ impl SessionListComponent {
             }
             SessionListView::EditTags(ta) => {
                 let row_area = Rect {
-                    y: area.y + tags_row,
+                    y: area.y + self.tags_row,
                     height: 1,
                     ..area
                 };
@@ -315,8 +334,26 @@ impl Component for SessionListComponent {
     fn handle_action(&mut self, action: &Action) -> Option<Action> {
         match action {
             Action::SessionsLoaded(sessions) => {
+                // Captured *before* `self.sessions` is replaced — see `recompute_filtered`'s doc
+                // comment for why this can't be read afterward.
+                let preferred_id = self.selected_id();
                 self.sessions = sessions.clone();
-                self.recompute_filtered();
+                self.recompute_filtered(preferred_id);
+                None
+            }
+            Action::CloseSessionList => {
+                // Discards any in-progress `Detail`/`Edit*` sub-view (and unsaved edit text)
+                // when the drawer closes, so reopening it always starts back at the top-level
+                // list rather than resuming stale state.
+                self.view = SessionListView::List;
+                None
+            }
+            Action::RestoreDescriptionEdit(text) => {
+                self.view = SessionListView::EditDescription(TextArea::new(vec![text.clone()]));
+                None
+            }
+            Action::RestoreTagsEdit(text) => {
+                self.view = SessionListView::EditTags(TextArea::new(vec![text.clone()]));
                 None
             }
             Action::Key(key) => {
@@ -409,7 +446,8 @@ impl Component for SessionListComponent {
                         }
                         _ => {
                             self.search.input(*key);
-                            self.recompute_filtered();
+                            let preferred_id = self.selected_id();
+                            self.recompute_filtered(preferred_id);
                             None
                         }
                     };
@@ -454,18 +492,79 @@ impl Component for SessionListComponent {
     fn cursor(&self) -> Option<(u16, u16)> {
         if self.searching {
             let DataCursor(_, col) = self.search.cursor();
-            return Some((col as u16, 0));
+            return Some((col as u16, TITLE_ROWS));
         }
         match &self.view {
             SessionListView::EditDescription(ta) => {
                 let DataCursor(_, col) = ta.cursor();
-                Some((col as u16, self.description_row))
+                Some((col as u16, TITLE_ROWS + self.description_row))
             }
             SessionListView::EditTags(ta) => {
                 let DataCursor(_, col) = ta.cursor();
-                Some((col as u16, self.tags_row))
+                Some((col as u16, TITLE_ROWS + self.tags_row))
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+
+    fn session(topic: &str) -> Session {
+        Session::new(topic.to_string())
+    }
+
+    fn key(code: KeyCode) -> Action {
+        Action::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// Regression test for a bug where reloading the session list captured the
+    /// currently-selected id via `self.selected_id()` *after* `self.sessions` had already been
+    /// replaced, silently reinterpreting a stale filtered index against the new data and
+    /// potentially selecting a different session than the one the user had highlighted.
+    #[test]
+    fn reload_keeps_the_same_session_selected_even_when_order_changes() {
+        let mut c = SessionListComponent::default();
+        c.handle_action(&Action::SessionsLoaded(vec![
+            (1, session("alpha")),
+            (2, session("beta")),
+            (3, session("gamma")),
+        ]));
+        c.state.select(Some(1)); // "beta", id 2
+        assert_eq!(c.selected_id(), Some(2));
+
+        // Reload with the same sessions in a different order (as if timestamps changed) — the
+        // previously selected session (id 2) must still be selected, not whatever now happens to
+        // sit at the old index.
+        c.handle_action(&Action::SessionsLoaded(vec![
+            (3, session("gamma")),
+            (2, session("beta")),
+            (1, session("alpha")),
+        ]));
+        assert_eq!(c.selected_id(), Some(2));
+    }
+
+    /// Regression test for a bug where closing the drawer via `Tab` from `Detail`/`Edit*` left
+    /// `SessionListComponent`'s internal sub-view untouched, so reopening it resumed the stale
+    /// (possibly unsaved-edit-holding) sub-view instead of starting back at the top-level list.
+    #[test]
+    fn close_session_list_resets_a_stale_detail_or_edit_view() {
+        let mut c = SessionListComponent::default();
+        c.handle_action(&Action::SessionsLoaded(vec![(1, session("alpha"))]));
+        c.state.select(Some(0));
+
+        c.handle_action(&key(KeyCode::Char('i')));
+        c.handle_action(&key(KeyCode::Char('d')));
+        assert!(c.cursor().is_some(), "should be mid-edit");
+
+        c.handle_action(&Action::CloseSessionList);
+        assert!(
+            c.cursor().is_none(),
+            "drawer closing must discard the stale edit sub-view"
+        );
     }
 }

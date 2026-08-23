@@ -60,6 +60,12 @@ pub enum Action {
         id: Option<i64>,
         tags: Vec<String>,
     },
+    /// Re-enters the description editor after a failed `SetSessionDescription`, preserving the
+    /// text the user had typed instead of silently discarding it.
+    RestoreDescriptionEdit(String),
+    /// Re-enters the tags editor after a failed `SetSessionTags`, preserving the typed text
+    /// (reconstructed as `tag1, tag2, ...`) instead of silently discarding it.
+    RestoreTagsEdit(String),
 
     OpenSessionList,
     CloseSessionList,
