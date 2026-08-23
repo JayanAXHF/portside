@@ -68,7 +68,7 @@ impl Component for CommandLineComponent {
             Line::from(format!(":{}", self.buffer))
         } else {
             Line::from(
-                "Press : for commands (resume-previous, pause, resume, break, complete, sessions, theme, quit)",
+                "Press : for commands (resume-previous, pause, resume, break, complete, sessions, describe, theme, quit)",
             )
             .dim()
         };

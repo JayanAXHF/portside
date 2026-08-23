@@ -57,7 +57,16 @@ impl Database {
                 secs       INTEGER NOT NULL,
                 PRIMARY KEY (session_id, day)
             );
-            CREATE INDEX IF NOT EXISTS idx_session_time_entries_day ON session_time_entries(day);",
+            CREATE INDEX IF NOT EXISTS idx_session_time_entries_day ON session_time_entries(day);
+            CREATE TABLE IF NOT EXISTS tags (
+                id   INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS session_tags (
+                session_id INTEGER NOT NULL REFERENCES sessions(id),
+                tag_id     INTEGER NOT NULL REFERENCES tags(id),
+                PRIMARY KEY (session_id, tag_id)
+            );",
         )?;
 
         // One-time backfill for DBs created before `session_time_entries` existed: attribute
@@ -72,6 +81,66 @@ impl Database {
             )?;
         }
 
+        if !column_exists(conn, "sessions", "description")? {
+            conn.execute("ALTER TABLE sessions ADD COLUMN description TEXT", [])?;
+        }
+
+        Ok(())
+    }
+
+    /// Tags for `session_id`, alphabetical. Called once per row returned by any session query —
+    /// an N+1 query pattern, but an acceptable tradeoff for a personal tool's session volumes
+    /// (see `sessions_overlapping`'s doc comment for the same tradeoff elsewhere in this file).
+    fn tags_for_session(&self, session_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.name FROM session_tags st JOIN tags t ON t.id = st.tag_id
+             WHERE st.session_id = ?1 ORDER BY t.name ASC",
+        )?;
+        let tags = stmt
+            .query_map(params![session_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(tags)
+    }
+
+    fn get_or_create_tag(&self, name: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tags (name) VALUES (?1) ON CONFLICT(name) DO NOTHING",
+            params![name],
+        )?;
+        let id = self
+            .conn
+            .query_row("SELECT id FROM tags WHERE name = ?1", params![name], |row| {
+                row.get(0)
+            })?;
+        Ok(id)
+    }
+
+    pub fn set_session_description(&self, id: i64, description: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET description = ?1 WHERE id = ?2",
+            params![description, id],
+        )?;
+        Ok(())
+    }
+
+    /// Replaces the full set of tags on `id` with `tags`, deduplicated case-insensitively.
+    pub fn set_session_tags(&self, id: i64, tags: &[String]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM session_tags WHERE session_id = ?1", params![id])?;
+
+        let mut seen = std::collections::HashSet::new();
+        for tag in tags {
+            let key = tag.to_ascii_lowercase();
+            if tag.is_empty() || !seen.insert(key) {
+                continue;
+            }
+            let tag_id = self.get_or_create_tag(tag)?;
+            self.conn.execute(
+                "INSERT INTO session_tags (session_id, tag_id) VALUES (?1, ?2)
+                 ON CONFLICT(session_id, tag_id) DO NOTHING",
+                params![id, tag_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -150,12 +219,13 @@ impl Database {
         end: OffsetDateTime,
     ) -> Result<Vec<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
              FROM sessions s JOIN topics t ON t.id = s.topic_id",
         )?;
         let rows = stmt
             .query_map([], row_to_session)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = self.with_tags(rows)?;
         Ok(rows
             .into_iter()
             .filter(|(_, s)| {
@@ -189,7 +259,7 @@ impl Database {
 
     pub fn list_recent_sessions(&self, limit: u32) -> Result<Vec<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
              FROM sessions s JOIN topics t ON t.id = s.topic_id
              ORDER BY s.started_at DESC
              LIMIT ?1",
@@ -197,20 +267,23 @@ impl Database {
         let rows = stmt
             .query_map(params![limit], row_to_session)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        self.with_tags(rows)
     }
 
     /// Most recently started session that is not yet `Completed`, for `resume-previous`.
     pub fn latest_resumable_session(&self) -> Result<Option<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
              FROM sessions s JOIN topics t ON t.id = s.topic_id
              WHERE s.status != 'completed'
              ORDER BY s.started_at DESC
              LIMIT 1",
         )?;
-        let session = stmt.query_row([], row_to_session).optional()?;
-        Ok(session)
+        let Some((id, mut session)) = stmt.query_row([], row_to_session).optional()? else {
+            return Ok(None);
+        };
+        session.tags = self.tags_for_session(id)?;
+        Ok(Some((id, session)))
     }
 
     /// Records `secs` more time worked on `session_id` on local calendar day `day` ("YYYY-MM-DD"),
@@ -274,13 +347,41 @@ impl Database {
 
     pub fn get_session(&self, id: i64) -> Result<Option<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
              FROM sessions s JOIN topics t ON t.id = s.topic_id
              WHERE s.id = ?1",
         )?;
-        let session = stmt.query_row(params![id], row_to_session).optional()?;
-        Ok(session)
+        let Some((id, mut session)) = stmt.query_row(params![id], row_to_session).optional()?
+        else {
+            return Ok(None);
+        };
+        session.tags = self.tags_for_session(id)?;
+        Ok(Some((id, session)))
     }
+
+    /// Backfills `tags` on every `Session` in `rows` in place, for query sites that return
+    /// multiple rows. See `tags_for_session` for the N+1-queries tradeoff this accepts.
+    fn with_tags(&self, rows: Vec<(i64, Session)>) -> Result<Vec<(i64, Session)>> {
+        rows.into_iter()
+            .map(|(id, mut session)| {
+                session.tags = self.tags_for_session(id)?;
+                Ok((id, session))
+            })
+            .collect()
+    }
+}
+
+/// Checks whether `column` exists on `table` via `PRAGMA table_info`, so migrations can guard
+/// `ALTER TABLE ... ADD COLUMN` calls (which aren't idempotent, unlike `CREATE TABLE IF NOT
+/// EXISTS`).
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .iter()
+        .any(|name| name == column);
+    Ok(exists)
 }
 
 fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<(i64, Session)> {
@@ -289,6 +390,7 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<(i64, Session)> {
     let started_at_raw: String = row.get(2)?;
     let elapsed_secs: i64 = row.get(3)?;
     let status_raw: String = row.get(4)?;
+    let description: Option<String> = row.get(5)?;
 
     let started_at = OffsetDateTime::parse(&started_at_raw, &Rfc3339).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
@@ -306,6 +408,8 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<(i64, Session)> {
             status,
             running_since: None,
             running_since_wall: None,
+            description,
+            tags: Vec::new(),
         },
     ))
 }
@@ -342,6 +446,63 @@ mod tests {
         let recent = db.list_recent_sessions(10).unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].0, id);
+    }
+
+    #[test]
+    fn set_session_description_round_trips_and_clears() {
+        let db = Database::open_in_memory().unwrap();
+        let session = Session::new("writing".to_string());
+        let id = db.insert_session(&session).unwrap();
+
+        assert_eq!(db.get_session(id).unwrap().unwrap().1.description, None);
+
+        db.set_session_description(id, Some("chapter 3")).unwrap();
+        assert_eq!(
+            db.get_session(id).unwrap().unwrap().1.description,
+            Some("chapter 3".to_string())
+        );
+
+        db.set_session_description(id, None).unwrap();
+        assert_eq!(db.get_session(id).unwrap().unwrap().1.description, None);
+    }
+
+    #[test]
+    fn set_session_tags_replaces_the_full_set_and_dedupes_case_insensitively() {
+        let db = Database::open_in_memory().unwrap();
+        let session = Session::new("writing".to_string());
+        let id = db.insert_session(&session).unwrap();
+
+        assert!(db.get_session(id).unwrap().unwrap().1.tags.is_empty());
+
+        db.set_session_tags(
+            id,
+            &["rust".to_string(), "Study".to_string(), "rust".to_string()],
+        )
+        .unwrap();
+        let tags = db.get_session(id).unwrap().unwrap().1.tags;
+        assert_eq!(tags, vec!["Study".to_string(), "rust".to_string()]);
+
+        db.set_session_tags(id, &["writing".to_string()]).unwrap();
+        assert_eq!(
+            db.get_session(id).unwrap().unwrap().1.tags,
+            vec!["writing".to_string()]
+        );
+
+        db.set_session_tags(id, &[]).unwrap();
+        assert!(db.get_session(id).unwrap().unwrap().1.tags.is_empty());
+    }
+
+    #[test]
+    fn list_recent_sessions_includes_description_and_tags() {
+        let db = Database::open_in_memory().unwrap();
+        let session = Session::new("writing".to_string());
+        let id = db.insert_session(&session).unwrap();
+        db.set_session_description(id, Some("chapter 3")).unwrap();
+        db.set_session_tags(id, &["rust".to_string()]).unwrap();
+
+        let recent = db.list_recent_sessions(10).unwrap();
+        assert_eq!(recent[0].1.description, Some("chapter 3".to_string()));
+        assert_eq!(recent[0].1.tags, vec!["rust".to_string()]);
     }
 
     #[test]

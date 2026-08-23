@@ -217,6 +217,10 @@ impl App {
                 let result = self.remove_session(*id);
                 Some(self.toast_result(result))
             }
+            Action::SetSessionDescription { id, text } => {
+                let result = self.set_session_description(*id, text.clone());
+                Some(self.toast_result(result))
+            }
             Action::OpenSessionList => {
                 self.mode = Mode::SessionList;
                 match self.db.list_recent_sessions(50) {
@@ -349,6 +353,7 @@ impl App {
                 duration,
             }),
             Command::Remove(id) => Some(Action::RemoveSession(id)),
+            Command::Describe { id, text } => Some(Action::SetSessionDescription { id, text }),
         }
     }
 
@@ -749,6 +754,8 @@ impl App {
             status: SessionStatus::Completed,
             running_since: None,
             running_since_wall: None,
+            description: None,
+            tags: Vec::new(),
         };
         let id = self.db.insert_completed_session(&session, end)?;
 
@@ -780,6 +787,48 @@ impl App {
         self.refresh_today_total_base();
         self.sync_discord_presence();
         Ok(format!("Removed session: {}", session.topic))
+    }
+
+    /// Handles `:describe [id] <text>` (and, later, the details-pane inline editor): sets
+    /// `description` on `id`, or the active session when `id` is `None`. An empty/whitespace-only
+    /// `text` clears the description. If `id` (or the active session, when `id` is `None`)
+    /// resolves to the currently active session, the in-memory copy is updated too via
+    /// `take_active`/`restore` so it stays in sync without a re-fetch.
+    fn set_session_description(&mut self, id: Option<i64>, text: String) -> Result<String> {
+        let text = text.trim();
+        let description = if text.is_empty() { None } else { Some(text) };
+
+        let target_id = match id {
+            Some(id) => id,
+            None => self
+                .session_id
+                .ok_or_else(|| AppError::InvalidCommand("no active session".to_string()))?,
+        };
+
+        if self.session_id == Some(target_id) {
+            let Some((id, mut session)) = self.take_active() else {
+                return Err(AppError::InvalidCommand("no active session".to_string()));
+            };
+            session.description = description.map(str::to_string);
+            if let Err(err) = self.db.set_session_description(id, description) {
+                self.restore(id, session);
+                return Err(err);
+            }
+            self.restore(id, session);
+        } else {
+            self.db.get_session(target_id)?.ok_or_else(|| {
+                AppError::InvalidCommand(format!("no session with id {target_id}"))
+            })?;
+            self.db.set_session_description(target_id, description)?;
+        }
+
+        if self.mode == Mode::SessionList {
+            let sessions = self.db.list_recent_sessions(50)?;
+            self.session_list
+                .handle_action(&Action::SessionsLoaded(sessions));
+        }
+
+        Ok("Description updated".to_string())
     }
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -1038,5 +1087,86 @@ mod tests {
         assert!(app.session_id.is_none());
         assert!(app.session.is_none());
         assert!(app.db.get_session(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_session_description_updates_the_active_session_in_memory_and_in_the_db() {
+        let path = temp_db_path("describe-active");
+        let config_dir = temp_db_path("describe-active-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        app.start_session("live-topic".to_string()).unwrap();
+        let id = app.session_id.unwrap();
+
+        app.set_session_description(None, "  chapter 3  ".to_string())
+            .unwrap();
+
+        assert_eq!(
+            app.session.as_ref().unwrap().description,
+            Some("chapter 3".to_string())
+        );
+        assert_eq!(
+            app.db.get_session(id).unwrap().unwrap().1.description,
+            Some("chapter 3".to_string())
+        );
+    }
+
+    #[test]
+    fn set_session_description_targets_an_explicit_inactive_session() {
+        let path = temp_db_path("describe-inactive");
+        let config_dir = temp_db_path("describe-inactive-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        let start = history::today_local()
+            .with_hms(9, 0, 0)
+            .unwrap()
+            .assume_offset(time::UtcOffset::UTC);
+        app.add_session("writing".to_string(), start, Duration::from_secs(3600))
+            .unwrap();
+        let id = app.db.list_recent_sessions(1).unwrap()[0].0;
+
+        app.set_session_description(Some(id), "old notes".to_string())
+            .unwrap();
+        assert_eq!(
+            app.db.get_session(id).unwrap().unwrap().1.description,
+            Some("old notes".to_string())
+        );
+
+        // Empty text clears the description.
+        app.set_session_description(Some(id), "  ".to_string())
+            .unwrap();
+        assert_eq!(app.db.get_session(id).unwrap().unwrap().1.description, None);
+    }
+
+    #[test]
+    fn set_session_description_rejects_an_unknown_id() {
+        let path = temp_db_path("describe-unknown");
+        let config_dir = temp_db_path("describe-unknown-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        assert!(
+            app.set_session_description(Some(9999), "text".to_string())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn set_session_description_without_an_id_or_active_session_is_an_error() {
+        let path = temp_db_path("describe-no-active");
+        let config_dir = temp_db_path("describe-no-active-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        assert!(
+            app.set_session_description(None, "text".to_string())
+                .is_err()
+        );
     }
 }

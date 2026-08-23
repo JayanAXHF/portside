@@ -50,6 +50,11 @@ pub enum Action {
         duration: Duration,
     },
     RemoveSession(i64),
+    /// `id: None` targets the active session.
+    SetSessionDescription {
+        id: Option<i64>,
+        text: String,
+    },
 
     OpenSessionList,
     CloseSessionList,
