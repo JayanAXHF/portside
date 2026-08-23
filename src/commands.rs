@@ -28,9 +28,15 @@ pub enum Command {
     },
     Remove(i64),
     /// `id: None` targets the active session.
-    Describe { id: Option<i64>, text: String },
+    Describe {
+        id: Option<i64>,
+        text: String,
+    },
     /// `id: None` targets the active session. Replaces the full tag set.
-    Tag { id: Option<i64>, tags: Vec<String> },
+    Tag {
+        id: Option<i64>,
+        tags: Vec<String>,
+    },
 }
 
 /// Parses a duration argument: `1h`/`5m`/`30s` (optionally combined, e.g. `1h30m`), or a bare

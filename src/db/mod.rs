@@ -107,11 +107,11 @@ impl Database {
             "INSERT INTO tags (name) VALUES (?1) ON CONFLICT(name) DO NOTHING",
             params![name],
         )?;
-        let id = self
-            .conn
-            .query_row("SELECT id FROM tags WHERE name = ?1", params![name], |row| {
-                row.get(0)
-            })?;
+        let id = self.conn.query_row(
+            "SELECT id FROM tags WHERE name = ?1",
+            params![name],
+            |row| row.get(0),
+        )?;
         Ok(id)
     }
 
@@ -125,8 +125,10 @@ impl Database {
 
     /// Replaces the full set of tags on `id` with `tags`, deduplicated case-insensitively.
     pub fn set_session_tags(&self, id: i64, tags: &[String]) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM session_tags WHERE session_id = ?1", params![id])?;
+        self.conn.execute(
+            "DELETE FROM session_tags WHERE session_id = ?1",
+            params![id],
+        )?;
 
         let mut seen = std::collections::HashSet::new();
         for tag in tags {
