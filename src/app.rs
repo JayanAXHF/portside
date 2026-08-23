@@ -298,7 +298,12 @@ impl App {
             Mode::Normal => self.handle_normal_key(key),
             Mode::CommandLine => self.command_line.handle_action(&Action::Key(key)),
             Mode::SessionList => {
-                if key.code == KeyCode::Esc || key.code == KeyCode::Tab {
+                if key.code == KeyCode::Tab {
+                    // `Esc` is deliberately NOT intercepted here: the drawer's `Detail`/`Edit*`
+                    // sub-views use it to step back a level (see `SessionListComponent`), only
+                    // emitting `Action::CloseSessionList` themselves once `Esc` is pressed from
+                    // the top-level list. `Tab` always closes the drawer outright, from any
+                    // sub-view.
                     Some(Action::CloseSessionList)
                 } else {
                     self.session_list.handle_action(&Action::Key(key))
@@ -936,7 +941,7 @@ impl App {
             }
 
             self.timer.render(content_area, buf, &ctx);
-            if self.mode == Mode::SessionList {
+            let drawer_area = if self.mode == Mode::SessionList {
                 // Deliberately overlaps the now-playing box in the top-right when the drawer is
                 // open, the same way it already overlaps the timer — the drawer takes render
                 // priority over whatever else was in `content_area` while it's open.
@@ -946,7 +951,10 @@ impl App {
                 ])
                 .areas(content_area);
                 self.session_list.render(drawer_area, buf, &ctx);
-            }
+                Some(drawer_area)
+            } else {
+                None
+            };
             if let Some(history_area) = history_area {
                 self.history.render(history_area, buf, &ctx);
             }
@@ -960,6 +968,10 @@ impl App {
                 && let Some((dx, dy)) = self.command_line.cursor()
             {
                 frame.set_cursor_position((command_area.x + dx, command_area.y + dy));
+            } else if let Some(drawer_area) = drawer_area
+                && let Some((dx, dy)) = self.session_list.cursor()
+            {
+                frame.set_cursor_position((drawer_area.x + dx, drawer_area.y + dy));
             }
         })?;
         Ok(())
@@ -1289,5 +1301,93 @@ mod tests {
             app.set_session_tags(None, vec!["rust".to_string()])
                 .is_err()
         );
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn type_str(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            app.process(Action::Key(key(KeyCode::Char(ch))));
+        }
+    }
+
+    /// End-to-end drive of the `i`/`d`/`t`/`Esc` details-pane flow through the same
+    /// `App::process` path real key events take, covering the `Esc`-routing fix in `handle_key`
+    /// (the drawer's `Detail`/`Edit*` sub-views must be able to step back a level via `Esc`
+    /// without the top-level `Mode::SessionList` handler intercepting it and closing the whole
+    /// drawer first).
+    #[test]
+    fn session_list_details_pane_edits_description_and_tags_end_to_end() {
+        let path = temp_db_path("details-pane");
+        let config_dir = temp_db_path("details-pane-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        app.start_session("live-topic".to_string()).unwrap();
+        let id = app.session_id.unwrap();
+
+        app.process(Action::OpenSessionList);
+        assert_eq!(app.mode, Mode::SessionList);
+
+        // `i` enters the read-only detail view.
+        app.process(Action::Key(key(KeyCode::Char('i'))));
+        assert_eq!(app.mode, Mode::SessionList, "detail view stays in the drawer");
+
+        // `d` enters description edit (seeded empty), type, then `Enter` saves and returns to
+        // detail.
+        app.process(Action::Key(key(KeyCode::Char('d'))));
+        type_str(&mut app, "new description");
+        app.process(Action::Key(key(KeyCode::Enter)));
+        assert_eq!(
+            app.db.get_session(id).unwrap().unwrap().1.description,
+            Some("new description".to_string())
+        );
+
+        // `t` enters tag edit, type, `Enter` saves.
+        app.process(Action::Key(key(KeyCode::Char('t'))));
+        type_str(&mut app, "rust,study");
+        app.process(Action::Key(key(KeyCode::Enter)));
+        assert_eq!(
+            app.db.get_session(id).unwrap().unwrap().1.tags,
+            vec!["rust".to_string(), "study".to_string()]
+        );
+
+        // First `Esc` steps Detail back to List (still inside the drawer)...
+        app.process(Action::Key(key(KeyCode::Esc)));
+        assert_eq!(app.mode, Mode::SessionList);
+        // ...second `Esc` closes the drawer entirely.
+        app.process(Action::Key(key(KeyCode::Esc)));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// `Esc` from an edit sub-view discards in-progress typing and returns to `Detail` without
+    /// persisting anything — verified via the DB staying untouched.
+    #[test]
+    fn session_list_edit_esc_discards_without_persisting() {
+        let path = temp_db_path("details-pane-cancel");
+        let config_dir = temp_db_path("details-pane-cancel-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        app.start_session("live-topic".to_string()).unwrap();
+        let id = app.session_id.unwrap();
+
+        app.process(Action::OpenSessionList);
+        app.process(Action::Key(key(KeyCode::Char('i'))));
+        app.process(Action::Key(key(KeyCode::Char('d'))));
+        type_str(&mut app, "discarded text");
+        app.process(Action::Key(key(KeyCode::Esc)));
+
+        assert_eq!(app.db.get_session(id).unwrap().unwrap().1.description, None);
+        // Still in the drawer, back at Detail — one more `Esc` goes to List, not Normal.
+        assert_eq!(app.mode, Mode::SessionList);
+        app.process(Action::Key(key(KeyCode::Esc)));
+        assert_eq!(app.mode, Mode::SessionList);
+        app.process(Action::Key(key(KeyCode::Esc)));
+        assert_eq!(app.mode, Mode::Normal);
     }
 }
