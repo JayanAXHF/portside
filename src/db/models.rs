@@ -83,6 +83,8 @@ pub struct Session {
     pub status: SessionStatus,
     pub running_since: Option<Instant>,
     pub running_since_wall: Option<OffsetDateTime>,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
 }
 
 impl Session {
@@ -94,6 +96,8 @@ impl Session {
             status: SessionStatus::Running,
             running_since: Some(Instant::now()),
             running_since_wall: Some(now_local()),
+            description: None,
+            tags: Vec::new(),
         }
     }
 

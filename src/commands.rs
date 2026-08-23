@@ -27,6 +27,8 @@ pub enum Command {
         duration: Duration,
     },
     Remove(i64),
+    /// `id: None` targets the active session.
+    Describe { id: Option<i64>, text: String },
 }
 
 /// Parses a duration argument: `1h`/`5m`/`30s` (optionally combined, e.g. `1h30m`), or a bare
@@ -186,6 +188,24 @@ pub fn parse(input: &str) -> Result<Command> {
             .parse::<i64>()
             .map(Command::Remove)
             .map_err(|_| AppError::InvalidCommand(format!("invalid session id: {rest}"))),
+        "describe" if rest.is_empty() => Err(AppError::InvalidCommand(
+            "usage: describe [id] <text>".to_string(),
+        )),
+        "describe" => {
+            let (id, text) = match rest.split_once(char::is_whitespace) {
+                Some((maybe_id, text)) if maybe_id.parse::<i64>().is_ok() => {
+                    (Some(maybe_id.parse().unwrap()), text.trim().to_string())
+                }
+                _ => (None, rest.to_string()),
+            };
+            if text.is_empty() {
+                Err(AppError::InvalidCommand(
+                    "usage: describe [id] <text>".to_string(),
+                ))
+            } else {
+                Ok(Command::Describe { id, text })
+            }
+        }
         "" => Err(AppError::InvalidCommand("empty command".to_string())),
         other => Err(AppError::InvalidCommand(format!(
             "unknown command: {other}"
@@ -358,6 +378,59 @@ mod tests {
         assert_eq!(parse("rm 42").unwrap(), Command::Remove(42));
         assert!(parse("remove").is_err());
         assert!(parse("remove abc").is_err());
+    }
+
+    #[test]
+    fn parses_describe_command_for_active_session() {
+        assert_eq!(
+            parse("describe working through chapter 3").unwrap(),
+            Command::Describe {
+                id: None,
+                text: "working through chapter 3".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_describe_command_with_explicit_id() {
+        assert_eq!(
+            parse("describe 42 working through chapter 3").unwrap(),
+            Command::Describe {
+                id: Some(42),
+                text: "working through chapter 3".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn describe_treats_non_numeric_first_word_as_text_not_an_id() {
+        assert_eq!(
+            parse("describe chapter 3 review").unwrap(),
+            Command::Describe {
+                id: None,
+                text: "chapter 3 review".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn describe_rejects_empty_text() {
+        assert!(parse("describe").is_err());
+        assert!(parse("describe   ").is_err());
+    }
+
+    /// A single numeric token with nothing after it is ambiguous between "id with no text" and
+    /// "description that happens to be a number" — treated as the latter (text for the active
+    /// session), matching the "otherwise the whole rest is the description" fallback.
+    #[test]
+    fn describe_with_a_lone_numeric_token_is_treated_as_text() {
+        assert_eq!(
+            parse("describe 42").unwrap(),
+            Command::Describe {
+                id: None,
+                text: "42".to_string(),
+            }
+        );
     }
 
     #[test]
