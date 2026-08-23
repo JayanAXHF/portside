@@ -115,8 +115,7 @@ impl Component for CommandLineComponent {
                         }
                         if self.buffer.is_empty() || self.last_key_was_history {
                             self.last_key_was_history = true;
-                            self.history_index =
-                                (self.history_index + 1).min(self.history.len());
+                            self.history_index = (self.history_index + 1).min(self.history.len());
                             self.buffer =
                                 self.history[self.history.len() - self.history_index].clone();
                             self.cursor = self.buffer.chars().count();
@@ -130,9 +129,8 @@ impl Component for CommandLineComponent {
                                 self.buffer.clear();
                                 self.last_key_was_history = false;
                             } else {
-                                self.buffer = self.history
-                                    [self.history.len() - self.history_index]
-                                    .clone();
+                                self.buffer =
+                                    self.history[self.history.len() - self.history_index].clone();
                             }
                             self.cursor = self.buffer.chars().count();
                         }

@@ -1334,7 +1334,11 @@ mod tests {
 
         // `i` enters the read-only detail view.
         app.process(Action::Key(key(KeyCode::Char('i'))));
-        assert_eq!(app.mode, Mode::SessionList, "detail view stays in the drawer");
+        assert_eq!(
+            app.mode,
+            Mode::SessionList,
+            "detail view stays in the drawer"
+        );
 
         // `d` enters description edit (seeded empty), type, then `Enter` saves and returns to
         // detail.
@@ -1387,6 +1391,70 @@ mod tests {
         assert_eq!(app.mode, Mode::SessionList);
         app.process(Action::Key(key(KeyCode::Esc)));
         assert_eq!(app.mode, Mode::SessionList);
+        app.process(Action::Key(key(KeyCode::Esc)));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// End-to-end drive of the `/`-triggered search box: plain text narrows by topic substring,
+    /// `#tag` narrows by exact tag, and `Esc` unfocuses the box (keeping the filter) before a
+    /// second `Esc` closes the drawer — the same "step back a level at a time" pattern as the
+    /// details pane.
+    #[test]
+    fn session_list_search_filters_by_topic_substring_and_tag() {
+        let path = temp_db_path("search-filter");
+        let config_dir = temp_db_path("search-filter-config");
+        let _cleanup = TempDb(path.clone());
+        let _config_cleanup = TempDb(config_dir.clone());
+        let mut app = App::new(path, config_dir, true).unwrap();
+
+        app.start_session("alpha writing".to_string()).unwrap();
+        let alpha_id = app.session_id.unwrap();
+        app.set_session_tags(None, vec!["keep".to_string()])
+            .unwrap();
+        app.pause().unwrap();
+
+        let start = history::today_local()
+            .with_hms(9, 0, 0)
+            .unwrap()
+            .assume_offset(time::UtcOffset::UTC);
+        app.add_session(
+            "beta research".to_string(),
+            start,
+            Duration::from_secs(1800),
+        )
+        .unwrap();
+        let beta_id = app
+            .db
+            .list_recent_sessions(10)
+            .unwrap()
+            .into_iter()
+            .find(|(_, s)| s.topic == "beta research")
+            .unwrap()
+            .0;
+        app.set_session_tags(Some(beta_id), vec!["research".to_string()])
+            .unwrap();
+
+        app.process(Action::OpenSessionList);
+        assert_eq!(app.mode, Mode::SessionList);
+
+        // Plain text narrows by topic substring.
+        app.process(Action::Key(key(KeyCode::Char('/'))));
+        type_str(&mut app, "beta");
+        assert_eq!(app.session_list.selected_id(), Some(beta_id));
+
+        // Clear, then search by exact tag.
+        for _ in 0..4 {
+            app.process(Action::Key(key(KeyCode::Backspace)));
+        }
+        type_str(&mut app, "#keep");
+        assert_eq!(app.session_list.selected_id(), Some(alpha_id));
+
+        // `Esc` unfocuses the search box but keeps the filter applied; drawer stays open.
+        app.process(Action::Key(key(KeyCode::Esc)));
+        assert_eq!(app.mode, Mode::SessionList);
+        assert_eq!(app.session_list.selected_id(), Some(alpha_id));
+
+        // A second `Esc` (now unfocused) closes the drawer.
         app.process(Action::Key(key(KeyCode::Esc)));
         assert_eq!(app.mode, Mode::Normal);
     }

@@ -10,19 +10,21 @@ use crate::db::Session;
 /// requires an exact, case-insensitive match against one of `session.tags`; any other token
 /// requires a case-insensitive substring match against `session.topic` or `session.description`.
 pub fn matches(session: &Session, query: &str) -> bool {
-    query.split_whitespace().all(|token| match token.strip_prefix('#') {
-        Some(tag) => session.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)),
-        None => {
-            let token = token.to_lowercase();
-            session.topic.to_lowercase().contains(&token)
-                || session
-                    .description
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&token)
-        }
-    })
+    query
+        .split_whitespace()
+        .all(|token| match token.strip_prefix('#') {
+            Some(tag) => session.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)),
+            None => {
+                let token = token.to_lowercase();
+                session.topic.to_lowercase().contains(&token)
+                    || session
+                        .description
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&token)
+            }
+        })
 }
 
 #[cfg(test)]

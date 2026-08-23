@@ -1,5 +1,5 @@
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Constraint, Rect, Size};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect, Size};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Widget};
@@ -8,6 +8,7 @@ use tui_scrollview::{ScrollView, ScrollViewState};
 
 use crate::action::Action;
 use crate::db::{Session, SessionStatus};
+use crate::session_filter;
 
 use super::{AppContext, Component};
 
@@ -27,7 +28,12 @@ enum SessionListView {
 }
 
 fn format_hhmmss(secs: u64) -> String {
-    format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
 }
 
 /// The `Tab`/`:sessions`-triggered pane listing past sessions. Only rendered while
@@ -44,6 +50,17 @@ pub struct SessionListComponent {
     /// detail layout. Only meaningful while `view` is an `Edit*` variant.
     description_row: u16,
     tags_row: u16,
+    /// The `/`-triggered search box; always allocated, holds the current filter text whether or
+    /// not it's currently focused. Single-line only — `Enter`/`Esc` unfocus it rather than being
+    /// forwarded as input.
+    search: TextArea<'static>,
+    /// Whether the search box currently owns raw key input. Only meaningful while `view ==
+    /// List` — `/` has no effect from `Detail`/`Edit*`.
+    searching: bool,
+    /// Indices into `sessions` matching `search`'s current text (see `session_filter::matches`),
+    /// recomputed by `recompute_filtered` whenever `sessions` or the search text changes.
+    /// `state.selected()` indexes into this, not into `sessions` directly.
+    filtered: Vec<usize>,
 }
 
 impl SessionListComponent {
@@ -51,37 +68,78 @@ impl SessionListComponent {
     pub fn selected_id(&self) -> Option<i64> {
         self.state
             .selected()
-            .and_then(|i| self.sessions.get(i))
+            .and_then(|i| self.filtered.get(i))
+            .and_then(|&idx| self.sessions.get(idx))
             .map(|(id, _)| *id)
     }
 
     fn selected_session(&self) -> Option<&Session> {
         self.state
             .selected()
-            .and_then(|i| self.sessions.get(i))
+            .and_then(|i| self.filtered.get(i))
+            .and_then(|&idx| self.sessions.get(idx))
             .map(|(_, session)| session)
     }
 
     fn select_next(&mut self) {
-        if self.sessions.is_empty() {
+        if self.filtered.is_empty() {
             return;
         }
         let next = match self.state.selected() {
-            Some(i) => (i + 1) % self.sessions.len(),
+            Some(i) => (i + 1) % self.filtered.len(),
             None => 0,
         };
         self.state.select(Some(next));
     }
 
     fn select_previous(&mut self) {
-        if self.sessions.is_empty() {
+        if self.filtered.is_empty() {
             return;
         }
         let prev = match self.state.selected() {
-            Some(0) | None => self.sessions.len() - 1,
+            Some(0) | None => self.filtered.len() - 1,
             Some(i) => i - 1,
         };
         self.state.select(Some(prev));
+    }
+
+    /// Recomputes `filtered` from `sessions` and the search box's current text, then tries to
+    /// keep the previously-selected session selected (by id) in the new filtered list, falling
+    /// back to the first row, or no selection if the filtered list is empty. Called whenever
+    /// `sessions` changes (`Action::SessionsLoaded`) or the search text changes (every keystroke
+    /// while `searching`).
+    fn recompute_filtered(&mut self) {
+        let query = self.search.lines()[0].clone();
+        let preferred_id = self.selected_id();
+
+        self.filtered = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, session))| session_filter::matches(session, &query))
+            .map(|(i, _)| i)
+            .collect();
+
+        let new_index = preferred_id
+            .and_then(|id| {
+                self.filtered
+                    .iter()
+                    .position(|&idx| self.sessions[idx].0 == id)
+            })
+            .or(if self.filtered.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+        self.state.select(new_index);
+    }
+
+    fn render_search_bar(&self, area: Rect, buf: &mut Buffer) {
+        if self.searching || !self.search.lines()[0].is_empty() {
+            self.search.render(area, buf);
+        } else {
+            Paragraph::new(Line::from("/ to search").dim()).render(area, buf);
+        }
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
@@ -89,9 +147,10 @@ impl SessionListComponent {
         let mut max_tstr_len = 0;
 
         let rows: Vec<_> = self
-            .sessions
+            .filtered
             .iter()
-            .map(|(_, session)| {
+            .map(|&i| &self.sessions[i].1)
+            .map(|session| {
                 let status_style = ctx.theme.status_style(session.status);
                 let status_text = match session.status {
                     SessionStatus::Running => "running",
@@ -122,10 +181,12 @@ impl SessionListComponent {
         ];
 
         let table = if rows.is_empty() {
-            Table::new(
-                vec![Row::new(["No previous sessions yet"])],
-                [Constraint::Fill(1)],
-            )
+            let message = if self.sessions.is_empty() {
+                "No previous sessions yet"
+            } else {
+                "No sessions match your search"
+            };
+            Table::new(vec![Row::new([message])], [Constraint::Fill(1)])
         } else {
             Table::new(rows, widths)
         }
@@ -242,7 +303,10 @@ impl Component for SessionListComponent {
         block.render(area, buf);
 
         if matches!(self.view, SessionListView::List) {
-            self.render_list(inner, buf, ctx);
+            let [search_area, list_area] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+            self.render_search_bar(search_area, buf);
+            self.render_list(list_area, buf, ctx);
         } else {
             self.render_detail(inner, buf, ctx);
         }
@@ -251,12 +315,8 @@ impl Component for SessionListComponent {
     fn handle_action(&mut self, action: &Action) -> Option<Action> {
         match action {
             Action::SessionsLoaded(sessions) => {
-                let selected_id = self.selected_id();
                 self.sessions = sessions.clone();
-                let new_index = selected_id
-                    .and_then(|id| self.sessions.iter().position(|(sid, _)| *sid == id))
-                    .or(if self.sessions.is_empty() { None } else { Some(0) });
-                self.state.select(new_index);
+                self.recompute_filtered();
                 None
             }
             Action::Key(key) => {
@@ -341,6 +401,20 @@ impl Component for SessionListComponent {
                 }
 
                 // SessionListView::List
+                if self.searching {
+                    return match key.code {
+                        KeyCode::Enter | KeyCode::Esc => {
+                            self.searching = false;
+                            None
+                        }
+                        _ => {
+                            self.search.input(*key);
+                            self.recompute_filtered();
+                            None
+                        }
+                    };
+                }
+
                 match key.code {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.select_next();
@@ -365,6 +439,10 @@ impl Component for SessionListComponent {
                         }
                         None
                     }
+                    KeyCode::Char('/') => {
+                        self.searching = true;
+                        None
+                    }
                     KeyCode::Esc => Some(Action::CloseSessionList),
                     _ => None,
                 }
@@ -374,6 +452,10 @@ impl Component for SessionListComponent {
     }
 
     fn cursor(&self) -> Option<(u16, u16)> {
+        if self.searching {
+            let DataCursor(_, col) = self.search.cursor();
+            return Some((col as u16, 0));
+        }
         match &self.view {
             SessionListView::EditDescription(ta) => {
                 let DataCursor(_, col) = ta.cursor();
