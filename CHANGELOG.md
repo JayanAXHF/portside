@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/JayanAXHF/portside/compare/v0.6.0...v0.6.1) - 2026-08-25
+
+### Added
+
+- add search for sessions
+- in place session details pane
+- add session tags
+- add session descriptions
+
+### Fixed
+
+- address bugs and feedback
+
 ## [0.6.0](https://github.com/JayanAXHF/portside/compare/v0.5.0...v0.6.0) - 2026-08-16
 
 ### Added
