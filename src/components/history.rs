@@ -110,9 +110,9 @@ fn render_bar_chart(series: &[(Date, i64)], inner: Rect, buf: &mut Buffer, theme
     let bars: Vec<Bar> = shown
         .iter()
         .map(|(date, secs)| {
-            let minutes = (*secs / 60).max(0) as u64;
+            let hours = chart_hours(*secs);
             Bar::default()
-                .value(minutes)
+                .value(hours as u64)
                 .style(Style::new().fg(theme.accent))
                 .label(Line::from(format!("{:02}", date.day())))
         })
@@ -256,5 +256,25 @@ fn format_minutes(total_secs: i64) -> String {
         format!("{h}h {m}m")
     } else {
         format!("{m}m")
+    }
+}
+
+/// Converts exact stored seconds to the integer-hour scale used by weekly/cumulative bars.
+/// Ceiling keeps any positive amount of work visible instead of collapsing it to zero.
+fn chart_hours(secs: i64) -> u64 {
+    ((secs.max(0) + 3_599) / 3_600) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chart_hours;
+
+    #[test]
+    fn chart_hours_use_ceiling_conversion() {
+        assert_eq!(chart_hours(0), 0);
+        assert_eq!(chart_hours(60), 1);
+        assert_eq!(chart_hours(3_600), 1);
+        assert_eq!(chart_hours(7_200), 2);
+        assert_eq!(chart_hours(-1), 0);
     }
 }
