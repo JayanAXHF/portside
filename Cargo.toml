@@ -40,3 +40,4 @@ zbus = { version = "5.19.0", default-features = false, features = ["blocking-api
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
+bin-dir = "portside{ binary-ext }"
