@@ -22,6 +22,16 @@ struct Cli {
     /// Print today's total and exit
     #[arg(long)]
     todays_total: bool,
+    #[arg(long)]
+    topic: Option<String>,
+    #[arg(long)]
+    link_exam: Option<String>,
+    #[arg(long)]
+    link_path: Option<String>,
+    #[arg(long, value_names = ["EXAM", "PATH"], num_args = 2)]
+    print_linked_summary: Option<Vec<String>>,
+    #[arg(long)]
+    resume: Option<i64>,
 }
 
 fn main() -> Result<()> {
@@ -33,6 +43,13 @@ fn main() -> Result<()> {
     }
 
     let db_path = data_dir()?.join("portside.db");
+
+    if let Some(values) = cli.print_linked_summary.as_deref() {
+        let db = Database::open(&db_path)?;
+        let (secs, count, last_id) = db.linked_summary(&values[0], &values[1])?;
+        println!("{{\"total_secs\":{secs},\"session_count\":{count},\"resumable_id\":{}}}", last_id.map_or("null".to_owned(), |id| id.to_string()));
+        return Ok(());
+    }
 
     // Redirect our own stderr to a log file instead of the terminal. Subprocesses we spawn (e.g.
     // macOS's `osascript` for now-playing info, invoked on its own poll cadence in
@@ -61,6 +78,11 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     let mut app = App::new(db_path, config_dir()?, cli.no_discord)?;
+    if let Some(topic) = cli.topic {
+        app.start_initial_session(topic, cli.link_exam, cli.link_path)?;
+    } else if let Some(id) = cli.resume {
+        app.resume_initial_session(id)?;
+    }
     let result = app.run(&mut terminal);
     ratatui::restore();
     result

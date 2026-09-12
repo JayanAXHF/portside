@@ -180,7 +180,10 @@ impl SessionListComponent {
                     max_width = length;
                 }
                 Row::new(vec![
-                    Cell::new(session.topic.clone()),
+                    Cell::new(match &session.link_exam {
+                        Some(exam) => format!("[{}] {}", exam, session.topic),
+                        None => session.topic.clone(),
+                    }),
                     Cell::new(t_str),
                     Cell::new(Span::styled(status_text, status_style)),
                 ])
@@ -233,7 +236,10 @@ impl SessionListComponent {
         let elapsed = format_hhmmss(session.live_elapsed().as_secs());
 
         let mut lines = vec![
-            Line::from(format!("Topic: {}", session.topic)),
+            Line::from(match &session.link_exam {
+                Some(exam) => format!("Topic: [{}] {}", exam, session.topic),
+                None => format!("Topic: {}", session.topic),
+            }),
             Line::from(vec![
                 Span::raw("Status: "),
                 Span::styled(status_text, ctx.theme.status_style(session.status)),

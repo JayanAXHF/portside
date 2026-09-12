@@ -49,7 +49,10 @@ impl Component for TimerComponent {
             return;
         };
 
-        Paragraph::new(session.topic.as_str())
+        Paragraph::new(match &session.link_exam {
+            Some(exam) => format!("[{}] {}", exam, session.topic),
+            None => session.topic.clone(),
+        })
             .alignment(Alignment::Center)
             .bold()
             .render(topic_area, buf);

@@ -181,8 +181,8 @@ impl App {
                 Err(err) => Some(Action::Toast(ToastType::Error, err.to_string())),
             },
             Action::ExecuteCommand(cmd) => self.execute_command(cmd.clone()),
-            Action::StartSession { topic } => {
-                let result = self.start_session(topic.clone());
+            Action::StartSession { topic, link_exam, link_path } => {
+                let result = self.start_session(topic.clone(), link_exam.clone(), link_path.clone());
                 Some(self.toast_result(result))
             }
             Action::Pause => {
@@ -361,7 +361,7 @@ impl App {
 
     fn execute_command(&mut self, cmd: Command) -> Option<Action> {
         match cmd {
-            Command::Topic(topic) => Some(Action::StartSession { topic }),
+            Command::Topic(topic) => Some(Action::StartSession { topic, link_exam: None, link_path: None }),
             Command::Pause => Some(Action::Pause),
             Command::Resume => Some(Action::Resume),
             Command::ToggleBreak(duration) => Some(Action::ToggleBreak(duration)),
@@ -569,7 +569,15 @@ impl App {
         self.session = Some(session);
     }
 
-    fn start_session(&mut self, topic: String) -> Result<String> {
+    pub fn start_initial_session(&mut self, topic: String, link_exam: Option<String>, link_path: Option<String>) -> Result<String> {
+        self.start_session(topic, link_exam, link_path)
+    }
+
+    pub fn resume_initial_session(&mut self, id: i64) -> Result<String> {
+        self.resume_previous(Some(id))
+    }
+
+    fn start_session(&mut self, topic: String, link_exam: Option<String>, link_path: Option<String>) -> Result<String> {
         if let Some((id, mut session)) = self.take_active() {
             if session.status == SessionStatus::Running {
                 let splits = session.freeze();
@@ -588,7 +596,13 @@ impl App {
             // Deliberately not restored: we're switching away from it to a new session.
         }
 
-        let session = Session::new(topic.clone());
+        let mut session = Session::new(topic.clone());
+        session.link_exam = link_exam;
+        session.link_path = link_path;
+        if let (Some(exam), Some(path)) = (&session.link_exam, &session.link_path) {
+            session.link_seq = Some(self.db.next_link_seq(exam, path)?);
+            session.topic = format!("{} #{}", session.topic, session.link_seq.unwrap());
+        }
         let id = self.db.insert_session(&session)?;
         self.session_id = Some(id);
         self.session = Some(session);
@@ -786,6 +800,9 @@ impl App {
             running_since_wall: None,
             description: None,
             tags: Vec::new(),
+            link_exam: None,
+            link_path: None,
+            link_seq: None,
         };
         let id = self.db.insert_completed_session(&session, end)?;
 

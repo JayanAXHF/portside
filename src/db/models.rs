@@ -85,6 +85,9 @@ pub struct Session {
     pub running_since_wall: Option<OffsetDateTime>,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    pub link_exam: Option<String>,
+    pub link_path: Option<String>,
+    pub link_seq: Option<i64>,
 }
 
 impl Session {
@@ -98,6 +101,9 @@ impl Session {
             running_since_wall: Some(now_local()),
             description: None,
             tags: Vec::new(),
+            link_exam: None,
+            link_path: None,
+            link_seq: None,
         }
     }
 

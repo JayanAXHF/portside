@@ -38,6 +38,8 @@ pub enum Action {
 
     StartSession {
         topic: String,
+        link_exam: Option<String>,
+        link_path: Option<String>,
     },
     Pause,
     Resume,

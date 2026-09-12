@@ -84,6 +84,12 @@ impl Database {
         if !column_exists(conn, "sessions", "description")? {
             conn.execute("ALTER TABLE sessions ADD COLUMN description TEXT", [])?;
         }
+        for column in ["link_exam TEXT", "link_path TEXT", "link_seq INTEGER"] {
+            let name = column.split_whitespace().next().unwrap();
+            if !column_exists(conn, "sessions", name)? {
+                conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), [])?;
+            }
+        }
 
         Ok(())
     }
@@ -166,16 +172,34 @@ impl Database {
         let topic = self.get_or_create_topic(&session.topic)?;
         let started_at = session.started_at.format(&Rfc3339)?;
         self.conn.execute(
-            "INSERT INTO sessions (topic_id, started_at, ended_at, elapsed_secs, status)
-             VALUES (?1, ?2, NULL, ?3, ?4)",
+            "INSERT INTO sessions (topic_id, started_at, ended_at, elapsed_secs, status, link_exam, link_path, link_seq)
+             VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7)",
             params![
                 topic.id,
                 started_at,
                 session.elapsed.as_secs() as i64,
                 session.status.as_str(),
+                session.link_exam,
+                session.link_path,
+                session.link_seq,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn next_link_seq(&self, exam: &str, path: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(link_seq), 0) + 1 FROM sessions WHERE link_exam = ?1 AND link_path = ?2",
+            params![exam, path], |row| row.get(0))?)
+    }
+
+    pub fn linked_summary(&self, exam: &str, path: &str) -> Result<(i64, i64, Option<i64>)> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(elapsed_secs), 0), COUNT(*),
+                    (SELECT id FROM sessions WHERE link_exam = ?1 AND link_path = ?2
+                     AND status != 'completed' ORDER BY started_at DESC LIMIT 1)
+             FROM sessions WHERE link_exam = ?1 AND link_path = ?2",
+            params![exam, path], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
     }
 
     /// Inserts a fully-formed, already-completed session with an explicit `ended_at`, for the
@@ -221,7 +245,7 @@ impl Database {
         end: OffsetDateTime,
     ) -> Result<Vec<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description, s.link_exam, s.link_path, s.link_seq
              FROM sessions s JOIN topics t ON t.id = s.topic_id",
         )?;
         let rows = stmt
@@ -261,7 +285,7 @@ impl Database {
 
     pub fn list_recent_sessions(&self, limit: u32) -> Result<Vec<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description, s.link_exam, s.link_path, s.link_seq
              FROM sessions s JOIN topics t ON t.id = s.topic_id
              ORDER BY s.started_at DESC
              LIMIT ?1",
@@ -275,7 +299,7 @@ impl Database {
     /// Most recently started session that is not yet `Completed`, for `resume-previous`.
     pub fn latest_resumable_session(&self) -> Result<Option<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description, s.link_exam, s.link_path, s.link_seq
              FROM sessions s JOIN topics t ON t.id = s.topic_id
              WHERE s.status != 'completed'
              ORDER BY s.started_at DESC
@@ -349,7 +373,7 @@ impl Database {
 
     pub fn get_session(&self, id: i64) -> Result<Option<(i64, Session)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description
+            "SELECT s.id, t.name, s.started_at, s.elapsed_secs, s.status, s.description, s.link_exam, s.link_path, s.link_seq
              FROM sessions s JOIN topics t ON t.id = s.topic_id
              WHERE s.id = ?1",
         )?;
@@ -393,6 +417,9 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<(i64, Session)> {
     let elapsed_secs: i64 = row.get(3)?;
     let status_raw: String = row.get(4)?;
     let description: Option<String> = row.get(5)?;
+    let link_exam: Option<String> = row.get(6).unwrap_or(None);
+    let link_path: Option<String> = row.get(7).unwrap_or(None);
+    let link_seq: Option<i64> = row.get(8).unwrap_or(None);
 
     let started_at = OffsetDateTime::parse(&started_at_raw, &Rfc3339).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
@@ -412,6 +439,9 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<(i64, Session)> {
             running_since_wall: None,
             description,
             tags: Vec::new(),
+            link_exam,
+            link_path,
+            link_seq,
         },
     ))
 }
