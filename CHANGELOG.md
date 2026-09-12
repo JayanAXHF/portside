@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/JayanAXHF/portside/compare/v0.6.3...v0.6.4) - 2026-09-12
+
+### Added
+
+- add starboard support
+
+### Other
+
+- *(ci)* fix naming in build-binaries
+
 ## [0.6.3](https://github.com/JayanAXHF/portside/compare/v0.6.2...v0.6.3) - 2026-09-01
 
 ### Fixed
